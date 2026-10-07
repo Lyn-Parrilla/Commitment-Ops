@@ -8,7 +8,7 @@ The product answers:
 
 The first use case is grant deliverable accountability. The domain stays general enough for compliance requirements, vendor contracts, customer implementations, regulatory reporting, and other commitment workflows.
 
-This repository currently contains the **engineering foundation only**. Domain features, dashboards, auth UI, document extraction, and LLM workflows are not implemented yet.
+The HTTP foundation is in place. The first product slice is a **deterministic in-memory domain** for workflows, requirements, owners, evidence, provenance, and human review. Dashboards, auth, persistence, document extraction, and LLM workflows are not implemented yet.
 
 ## Architecture
 
@@ -35,13 +35,27 @@ Design rules:
 app/                 FastAPI application
   api/health.py      Liveness endpoint
   config.py          Environment-backed settings
+  domain/            Deterministic accountability model (no HTTP)
   main.py            Application factory
 tests/               Pytest suite
 .env.example         Documented environment variable names (no secrets)
 Dockerfile           Container image for Railway
 ```
 
-Future domain work (workflows, requirements, deliverables, evidence, owners, progress, risk, provenance, human approval, audit events) will land as focused modules beside this core. Empty domain packages are intentionally omitted.
+## Domain
+
+`app.domain` is independent of FastAPI. Authoritative state is created and transitioned in Python:
+
+| Concept | Role |
+| --- | --- |
+| Workflow | Named effort (grant, compliance, vendor, implementation, reporting, or general) with a lifecycle |
+| Requirement | Promised work: owner, optional supervisor/due date/target, evidence expectation, provenance |
+| Person | Accountable human (owner, supervisor, reviewer, submitter) |
+| Evidence | Submitted proof associated with a requirement |
+| Provenance | How the requirement was introduced (`organization_template`, `document_explicit`, `ai_inferred`, `user_provided`, `system_derived`) |
+| Review | Human approval gate; AI-inferred requirements cannot start as authoritative |
+
+Progress aggregation, risk, permissions, audit logs, and persistence are deferred.
 
 ## Local setup
 
@@ -94,4 +108,4 @@ Railway can build from the `Dockerfile`. The container starts uvicorn on `$PORT`
 
 ## What this foundation does not include
 
-Dashboard UI, authentication screens, database schema, grant parsing, document extraction, LLM client code, and commitment domain models. Those belong in subsequent, test-backed slices.
+Dashboard UI, authentication screens, database schema, grant parsing, document extraction, CSV ingestion, and LLM client code. Those belong in subsequent, test-backed slices.
