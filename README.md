@@ -8,11 +8,11 @@ The product answers:
 
 The first use case is grant deliverable accountability. The domain stays general enough for compliance requirements, vendor contracts, customer implementations, regulatory reporting, and other commitment workflows.
 
-The HTTP foundation and first two domain slices are in place: a
+The HTTP foundation and first three domain slices are in place: a
 **deterministic accountability domain** plus an in-memory contract for source
-intake, requirement discovery, human review, and validated learning feedback.
-Dashboards, auth, persistence, document extraction, and LLM workflows are not
-implemented yet.
+intake, requirement discovery, human review, and validated learning feedback,
+with durable SQL persistence for authoritative workflows. Dashboards, auth,
+document extraction, and LLM workflows are not implemented yet.
 
 ## Architecture
 
@@ -21,7 +21,8 @@ implemented yet.
 | Language | Python 3.11+ |
 | API | FastAPI |
 | Validation | Pydantic / pydantic-settings |
-| Data, auth, files | Supabase (PostgreSQL, Auth, Storage) — configured later via environment |
+| Data | SQLAlchemy 2.x; PostgreSQL production target; SQLite tests |
+| Future auth and files | Supabase Auth and Storage |
 | AI | LLM API with structured outputs — integrated later |
 | Deploy | Railway, hosted desktop web application |
 | Source | GitHub |
@@ -41,7 +42,9 @@ app/                 FastAPI application
   config.py          Environment-backed settings
   domain/            Deterministic accountability model (no HTTP)
     discovery.py     Source, candidate, completeness, review, learning signals
+  persistence/       SQLAlchemy records and transactional workflow repository
   main.py            Application factory
+migrations/          Alembic schema migrations
 tests/               Pytest suite
 .env.example         Documented environment variable names (no secrets)
 Dockerfile           Container image for Railway
@@ -60,7 +63,60 @@ Dockerfile           Container image for Railway
 | Provenance | How the requirement was introduced (`organization_template`, `document_explicit`, `ai_inferred`, `user_provided`, `system_derived`) |
 | Review | Human approval gate; AI-inferred requirements cannot start as authoritative |
 
-Progress aggregation, risk, permissions, audit logs, and persistence are deferred.
+Progress aggregation, risk, permissions, and complete security auditing are
+deferred.
+
+## Persistence and audit foundation
+
+Slice 3 persists the authoritative workflow aggregate:
+
+- workflows and lifecycle status;
+- requirements, ownership, supervisors, dates, targets, provenance, review
+  metadata, status, and evidence expectations;
+- referenced people, including owners, supervisors, reviewers, and evidence
+  submitters; and
+- evidence descriptions, types, references, submission timestamps, submitters,
+  and status.
+
+Domain models remain independent of SQLAlchemy. `WorkflowRepository` translates
+between the existing Pydantic domain and relational records. It supports saving
+one complete workflow aggregate, retrieving by identifier, listing all
+workflows, and filtering by workflow type or status. Missing identifiers return
+`None`. The repository rejects duplicate or inconsistent requirement and
+evidence associations rather than silently reassigning them.
+
+A workflow and all related people, requirements, evidence, and its audit event
+are committed in one transaction. A failed record or audit insert rolls back
+the entire save. Persisted identifiers and review state are reconstructed
+without promoting pending AI-inferred requirements.
+
+PostgreSQL is the production target and is compatible with Supabase PostgreSQL.
+The standard suite uses isolated SQLite files and injects its migration URL
+within the test, so it never uses an externally configured production URL.
+Application startup also does not connect automatically.
+
+Set `DATABASE_URL` only through local or deployment environment configuration.
+Conventional `postgresql://` provider URLs are normalized to the psycopg 3
+driver. Apply migrations with:
+
+```bash
+alembic upgrade head
+```
+
+Railway should supply `DATABASE_URL` through service variables. Alembic uses
+that same value; no connection string or credential belongs in Git. Production
+schema changes must use migrations rather than runtime table creation.
+
+Every successful repository save appends a workflow audit event in the same
+transaction. Events contain an event identifier and UTC timestamp, workflow
+identifier, create/update operation, bounded before/after accountability
+snapshots, and optional caller-supplied actor and correlation references. The
+repository exposes audit history as read-only and provides no update or delete
+operation.
+
+This history records persistence activity; it is not tamper-proof security
+logging, authentication, authorization, multi-tenant isolation, or evidence of
+regulatory compliance. Actor identity is never inferred.
 
 ## Learning loop 1 — document and requirement intelligence
 
@@ -114,11 +170,13 @@ The optional organization reference on source metadata keeps validated feedback
 groupable for future organization-specific terminology, formats, evidence
 patterns, and workflow conventions.
 
-Learning signals are currently held in memory and are not durable across process
-restarts. This slice captures feedback; it does not train a model or implement
-embeddings, vector databases, retrieval-augmented generation (RAG), fine-tuning,
-or autonomous retraining. Future learning must continue to use validated human
-outcomes rather than unreviewed AI output.
+Source documents, candidates, discovery snapshots, and learning signals remain
+in memory and are not durable across process restarts. Slice 3 persists only the
+authoritative accountability aggregate. The discovery slice captures feedback;
+it does not train a model or implement embeddings, vector databases,
+retrieval-augmented generation (RAG), fine-tuning, or autonomous retraining.
+Future learning must continue to use validated human outcomes rather than
+unreviewed AI output.
 
 ## Learning loop 2 — personalized workflow intelligence (planned)
 
@@ -187,6 +245,7 @@ cp .env.example .env
 ```
 
 Edit `.env` locally when integrations need credentials. Do not put real keys in source, tests, or docs.
+Set `DATABASE_URL` before running Alembic or application persistence operations.
 
 ## Development commands
 
@@ -207,13 +266,16 @@ pytest
 
 ## Configuration
 
-All values are optional for this foundation. Names are stable so later features can bind to them without renaming.
+Application startup does not require integration credentials. `DATABASE_URL` is
+required when running migrations or persistence operations; the remaining
+integration values are reserved for later slices.
 
 | Variable | Purpose |
 | --- | --- |
 | `ENVIRONMENT` | `development`, `test`, or `production` |
 | `LOG_LEVEL` | Process log level |
 | `PORT` | HTTP port (Railway sets this; local default is 8000) |
+| `DATABASE_URL` | PostgreSQL connection URL for persistence and Alembic |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_ANON_KEY` | Browser / user-scoped Supabase key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase key; never expose to clients |
@@ -226,8 +288,9 @@ Railway can build from the `Dockerfile`. The container starts uvicorn on `$PORT`
 
 ## What this foundation does not include
 
-Dashboard UI, authentication screens, database schema, grant parsing, document
-extraction, CSV ingestion, LLM client code, embeddings, recognition engines,
-RAG, model training/retraining, scheduled reports, email delivery, behavioral
-analysis, and multiple-approver workflows. Those belong in subsequent,
-test-backed slices.
+Dashboard UI, authentication and authorization, tenant isolation, production
+Supabase provisioning, persistence for discovery/learning objects, grant
+parsing, document extraction, CSV ingestion, LLM client code, embeddings,
+recognition engines, RAG, model training/retraining, scheduled reports, email
+delivery, behavioral analysis, and multiple-approver workflows. Those belong in
+subsequent, test-backed slices.

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
 
+    database_url: SecretStr | None = None
+
     supabase_url: str | None = None
     supabase_anon_key: SecretStr | None = None
     supabase_service_role_key: SecretStr | None = None
