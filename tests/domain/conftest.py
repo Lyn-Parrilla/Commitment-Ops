@@ -1,8 +1,17 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
-from app.domain import Person, Requirement, RequirementProvenance
+from app.domain import (
+    DiscoveryClassification,
+    DocumentType,
+    Person,
+    Requirement,
+    RequirementCandidate,
+    RequirementProvenance,
+    SourceDocument,
+    SourceLocation,
+)
 
 
 @pytest.fixture
@@ -32,6 +41,17 @@ def reviewer() -> Person:
     )
 
 
+@pytest.fixture
+def source_document() -> SourceDocument:
+    return SourceDocument.create(
+        filename="synthetic-award-notice.pdf",
+        document_type=DocumentType.GRANT_AGREEMENT,
+        source_reference="intake/synthetic-award-notice.pdf",
+        uploaded_at=datetime(2026, 10, 8, 12, 0, tzinfo=UTC),
+        organization_reference="synthetic-community-services",
+    )
+
+
 def make_requirement(
     owner: Person,
     *,
@@ -47,4 +67,30 @@ def make_requirement(
         provenance=provenance,
         due_date=date(2026, 12, 15),
         target="1 report",
+    )
+
+
+def make_candidate(
+    source_document: SourceDocument,
+    owner: Person | None,
+    *,
+    provenance: RequirementProvenance = RequirementProvenance.AI_INFERRED,
+) -> RequirementCandidate:
+    return RequirementCandidate.discover(
+        title="Quarterly Outcomes Report",
+        description="Submit program outcomes for the reporting quarter.",
+        due_date=date(2026, 12, 15),
+        target="50 participants served",
+        owner=owner,
+        evidence_expectation="Quarterly participant records",
+        provenance=provenance,
+        classification=DiscoveryClassification.DELIVERABLE,
+        source_document=source_document,
+        source_location=SourceLocation(
+            page=7,
+            section="Reporting Requirements",
+            heading="Quarterly Outcomes",
+        ),
+        discovery_reason="The section uses mandatory reporting language.",
+        confidence=0.86,
     )

@@ -8,7 +8,11 @@ The product answers:
 
 The first use case is grant deliverable accountability. The domain stays general enough for compliance requirements, vendor contracts, customer implementations, regulatory reporting, and other commitment workflows.
 
-The HTTP foundation is in place. The first product slice is a **deterministic in-memory domain** for workflows, requirements, owners, evidence, provenance, and human review. Dashboards, auth, persistence, document extraction, and LLM workflows are not implemented yet.
+The HTTP foundation and first two domain slices are in place: a
+**deterministic accountability domain** plus an in-memory contract for source
+intake, requirement discovery, human review, and validated learning feedback.
+Dashboards, auth, persistence, document extraction, and LLM workflows are not
+implemented yet.
 
 ## Architecture
 
@@ -36,6 +40,7 @@ app/                 FastAPI application
   api/health.py      Liveness endpoint
   config.py          Environment-backed settings
   domain/            Deterministic accountability model (no HTTP)
+    discovery.py     Source, candidate, completeness, review, learning signals
   main.py            Application factory
 tests/               Pytest suite
 .env.example         Documented environment variable names (no secrets)
@@ -56,6 +61,119 @@ Dockerfile           Container image for Railway
 | Review | Human approval gate; AI-inferred requirements cannot start as authoritative |
 
 Progress aggregation, risk, permissions, audit logs, and persistence are deferred.
+
+## Learning loop 1 — document and requirement intelligence
+
+CommitmentOps treats source documents as evidence about potential commitments,
+not as organizational truth. Slice 2 implements this deterministic, in-memory
+flow:
+
+```text
+Grant document
+  -> candidate requirement discovery
+  -> completeness assessment
+  -> human review
+  -> authoritative Requirement after approval
+  -> validated feedback signal
+```
+
+A `RequirementCandidate` and a `Requirement` are deliberately different
+objects. Every candidate remains non-authoritative, including
+`document_explicit` candidates. Approval is the only candidate operation that
+creates an existing Slice 1 `Requirement`, and it records the human approval on
+that requirement. Rejection creates no requirement. AI-inferred candidates
+therefore cannot bypass the existing human-approval protection.
+
+Candidate completeness is deterministic. Title, description, owner, and
+evidence expectation are required to cross the authority boundary. Due date,
+target, and supervisor are tracked as optional accountability information.
+Missing values are reported; they are never invented.
+
+Source traceability retains the source document, any known page/section/heading
+or other source reference, provenance, discovery reason, confidence, and
+requirement-versus-deliverable classification. Unknown source details stay
+unset.
+
+Each human approval or rejection emits a `LearningSignal` alongside the review
+decision. It contains immutable snapshots of:
+
+- what discovery originally predicted;
+- what the human actually reviewed, including corrections;
+- the source and discovery metadata;
+- the human decision and reviewer; and
+- the resulting requirement characteristics, when approval created one.
+
+A human-added requirement that discovery missed can also be recorded as a
+learning signal. Learning signals are feedback about system performance; they
+are not requirements and cannot approve requirements. The original discovery
+remains separate from the reviewed or corrected candidate and the human
+decision, so later evaluation can distinguish AI output from validated human
+feedback.
+
+The optional organization reference on source metadata keeps validated feedback
+groupable for future organization-specific terminology, formats, evidence
+patterns, and workflow conventions.
+
+Learning signals are currently held in memory and are not durable across process
+restarts. This slice captures feedback; it does not train a model or implement
+embeddings, vector databases, retrieval-augmented generation (RAG), fine-tuning,
+or autonomous retraining. Future learning must continue to use validated human
+outcomes rather than unreviewed AI output.
+
+## Learning loop 2 — personalized workflow intelligence (planned)
+
+This loop is confirmed future architecture; it is not implemented in the
+current code.
+
+The planned workflow-intelligence loop will:
+
+- observe relevant workflow events, deliverable progress, evidence collection,
+  submissions, communications, responses, blockers, and deadlines;
+- identify potential individual work patterns and organizational bottlenecks
+  from recorded evidence;
+- preserve observations, hypotheses, confidence, recommendations,
+  interventions, approvals, and measured outcomes as distinct concepts;
+- recommend personalized assistance based on observed evidence and prior
+  outcomes; and
+- keep workflow-intelligence feedback logically separate from document and
+  requirement discovery feedback.
+
+An engagement strategy must not change automatically. Any proposed change must
+receive explicit human approval first. The future system must record the
+proposed change, approver, decision, decision timestamp, executed change, and
+subsequent outcome so recommendations can be evaluated without conflating a
+proposal with an action or result.
+
+This loop must avoid invasive surveillance, unsupported conclusions about
+employee motivation, punitive profiling, and treating individual behavior as
+the explanation for systemic process problems. Recommendations must remain
+evidence-based, reviewable, and subordinate to human judgment.
+
+## Reporting and approval architecture (planned)
+
+The following capabilities are confirmed requirements for future slices and do
+not exist in the current implementation:
+
+- weekly operational reports and monthly management reports;
+- multiple authorized email recipients per workflow, including recipient
+  management;
+- multiple designated engagement approvers;
+- configurable approval policies supporting either one authorized approver or
+  all designated approvers; and
+- enforcement that no proposed engagement change executes until its applicable
+  approval condition is satisfied.
+
+Future reports should cover deliverables, owners, deadlines, outstanding and
+overdue work, evidence, submissions, communication history, responses, emerging
+patterns, recommendations, and approval decisions. Communication reporting
+should distinguish attempted, sent, delivered, and acknowledged states whenever
+the underlying channel makes those states available.
+
+Reports must be versioned and access-controlled, with generation timestamps,
+source-data references, authorized recipients, and delivery outcomes. Scheduled
+generation, email delivery, behavioral analysis, recipient management, and
+multiple-approver workflows are planned only; none are implied by the current
+domain models.
 
 ## Local setup
 
@@ -108,4 +226,8 @@ Railway can build from the `Dockerfile`. The container starts uvicorn on `$PORT`
 
 ## What this foundation does not include
 
-Dashboard UI, authentication screens, database schema, grant parsing, document extraction, CSV ingestion, and LLM client code. Those belong in subsequent, test-backed slices.
+Dashboard UI, authentication screens, database schema, grant parsing, document
+extraction, CSV ingestion, LLM client code, embeddings, recognition engines,
+RAG, model training/retraining, scheduled reports, email delivery, behavioral
+analysis, and multiple-approver workflows. Those belong in subsequent,
+test-backed slices.
