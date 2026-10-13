@@ -103,6 +103,28 @@ driver. Apply migrations with:
 alembic upgrade head
 ```
 
+The Docker image includes `alembic.ini` and the complete `migrations/` tree.
+Building, migrating, and starting are separate operations:
+
+```bash
+# Build the image.
+docker build -t commitmentops .
+
+# In a shell where DATABASE_URL has been exported, stop if it is unset.
+: "${DATABASE_URL:?Export DATABASE_URL before running migrations}"
+
+# Deliberately apply migrations.
+docker run --rm -e DATABASE_URL commitmentops alembic upgrade head
+
+# Start the application; startup does not run migrations.
+docker run --rm -p 8000:8000 -e PORT=8000 commitmentops
+```
+
+Export `DATABASE_URL` before running the migration command. The command
+deliberately receives that existing environment value without placing a
+connection string in source or shell history. The image's default command starts
+only uvicorn; it does not apply migrations automatically.
+
 Railway should supply `DATABASE_URL` through service variables. Alembic uses
 that same value; no connection string or credential belongs in Git. Production
 schema changes must use migrations rather than runtime table creation.
