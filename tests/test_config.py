@@ -3,7 +3,11 @@ from pydantic import SecretStr
 import pytest
 
 from app.config import Settings, get_settings
-from app.persistence import configured_database_url, normalize_database_url
+from app.persistence import (
+    DatabaseConfigurationError,
+    configured_database_url,
+    normalize_database_url,
+)
 
 
 def test_settings_load_without_secrets() -> None:
@@ -42,7 +46,10 @@ def test_settings_read_environment_overrides(monkeypatch) -> None:
 def test_database_url_is_required_only_for_database_operations() -> None:
     settings = Settings(_env_file=None, database_url=None)
 
-    with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
+    with pytest.raises(
+        DatabaseConfigurationError,
+        match="database configuration is unavailable",
+    ):
         configured_database_url(settings)
 
 

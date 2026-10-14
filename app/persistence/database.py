@@ -11,6 +11,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import Settings, get_settings
+from app.persistence.exceptions import DatabaseConfigurationError
 
 
 class Base(DeclarativeBase):
@@ -40,7 +41,9 @@ def configured_database_url(settings: Settings | None = None) -> str:
 
     configured = (settings or get_settings()).database_url
     if configured is None or not configured.get_secret_value().strip():
-        raise RuntimeError("DATABASE_URL is required for database operations")
+        raise DatabaseConfigurationError(
+            "database configuration is unavailable"
+        )
     return configured.get_secret_value()
 
 

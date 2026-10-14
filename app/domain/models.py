@@ -208,6 +208,7 @@ class Requirement(BaseModel):
         )
 
     def cancel(self) -> None:
+        self._require_authoritative()
         self._set_status(
             allowed={
                 RequirementStatus.NOT_STARTED,

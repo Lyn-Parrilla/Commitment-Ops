@@ -8,12 +8,17 @@ from app.persistence.database import (
     create_session_factory,
     normalize_database_url,
 )
-from app.persistence.exceptions import InvalidAssociationError, PersistenceError
+from app.persistence.exceptions import (
+    DatabaseConfigurationError,
+    InvalidAssociationError,
+    PersistenceError,
+)
 from app.persistence.repository import AuditEvent, WorkflowRepository
 
 __all__ = [
     "AuditEvent",
     "Base",
+    "DatabaseConfigurationError",
     "InvalidAssociationError",
     "PersistenceError",
     "SessionFactory",

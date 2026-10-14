@@ -8,11 +8,12 @@ The product answers:
 
 The first use case is grant deliverable accountability. The domain stays general enough for compliance requirements, vendor contracts, customer implementations, regulatory reporting, and other commitment workflows.
 
-The HTTP foundation and first three domain slices are in place: a
+The HTTP foundation and first four slices are in place: a
 **deterministic accountability domain** plus an in-memory contract for source
 intake, requirement discovery, human review, and validated learning feedback,
-with durable SQL persistence for authoritative workflows. Dashboards, auth,
-document extraction, and LLM workflows are not implemented yet.
+with durable SQL persistence and a versioned API for authoritative workflows.
+Dashboards, auth, document extraction, and LLM workflows are not implemented
+yet.
 
 ## Architecture
 
@@ -38,7 +39,8 @@ Design rules:
 
 ```
 app/                 FastAPI application
-  api/health.py      Liveness endpoint
+  api/               Health and versioned HTTP routes/schemas
+  application/       Use cases orchestrating domain and persistence
   config.py          Environment-backed settings
   domain/            Deterministic accountability model (no HTTP)
     discovery.py     Source, candidate, completeness, review, learning signals
@@ -65,6 +67,40 @@ Dockerfile           Container image for Railway
 
 Progress aggregation, risk, permissions, and complete security auditing are
 deferred.
+
+## Accountability API
+
+Slice 4 exposes `/api/v1` operations to create, list, and retrieve workflows;
+add requirements; transition workflow and requirement lifecycles; and approve,
+reject, or resubmit requirement reviews. HTTP handlers validate explicit
+request schemas and delegate use cases to `WorkflowService`. The service loads
+aggregates through `WorkflowRepository`, invokes existing domain methods, and
+saves through the same transactional repository and audit boundary.
+
+Errors use a consistent envelope:
+
+```json
+{
+  "error": {
+    "code": "invalid_transition",
+    "message": "cannot complete a workflow in status draft"
+  }
+}
+```
+
+Missing resources return `404`, invalid request/domain data returns `422`,
+invalid lifecycle or association conflicts return `409`, and bounded
+persistence failures return `503` without exposing database details.
+
+AI-inferred requirements created through the API remain pending and
+non-authoritative until the review endpoint receives an explicit approval.
+Reviewer details supplied to the API are recorded as review attribution only;
+they are not authenticated identities and are not copied into audit actor
+fields.
+
+**Security boundary:** authentication, authorization, and tenant isolation are
+not implemented. This API is not safe for public exposure or real sensitive
+organizational data. Do not deploy it publicly before those controls exist.
 
 ## Persistence and audit foundation
 
@@ -278,6 +314,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 - Health: `GET http://127.0.0.1:8000/health`
+- Accountability API: `http://127.0.0.1:8000/api/v1/workflows`
 - OpenAPI docs: `http://127.0.0.1:8000/docs` (disabled when `ENVIRONMENT=production`)
 
 Run tests:

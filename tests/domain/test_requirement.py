@@ -152,6 +152,8 @@ def test_invalid_work_status_transitions(owner: Person) -> None:
     pending = make_requirement(owner, provenance=RequirementProvenance.AI_INFERRED)
     with pytest.raises(InvalidTransitionError, match="must be approved"):
         pending.start_work()
+    with pytest.raises(InvalidTransitionError, match="must be approved"):
+        pending.cancel()
 
     requirement = make_requirement(owner)
     with pytest.raises(InvalidTransitionError, match="cannot change requirement status"):
