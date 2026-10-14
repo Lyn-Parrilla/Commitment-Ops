@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -15,10 +16,14 @@ from app.domain import (
 )
 from app.persistence import (
     Base,
+    Organization,
+    OrganizationRepository,
     WorkflowRepository,
     create_database_engine,
     create_session_factory,
 )
+
+TEST_ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 
 
 @pytest.fixture
@@ -30,7 +35,14 @@ def database_url(tmp_path: Path) -> str:
 def repository(database_url: str) -> Iterator[WorkflowRepository]:
     engine = create_database_engine(database_url)
     Base.metadata.create_all(engine)
-    yield WorkflowRepository(create_session_factory(engine))
+    session_factory = create_session_factory(engine)
+    OrganizationRepository(session_factory).save(
+        Organization(
+            id=TEST_ORGANIZATION_ID,
+            name="Synthetic Test Organization",
+        )
+    )
+    yield WorkflowRepository(session_factory)
     engine.dispose()
 
 
@@ -79,6 +91,7 @@ def persisted_workflow() -> Workflow:
     workflow = Workflow.create(
         name="Synthetic Community Grant",
         workflow_type=WorkflowType.GRANT,
+        organization_id=TEST_ORGANIZATION_ID,
     )
     workflow.add_requirement(requirement)
     workflow.activate()

@@ -33,14 +33,19 @@ class APIModel(BaseModel):
 
 
 class PersonInput(APIModel):
-    id: UUID | None = None
     name: str = Field(min_length=1, max_length=200)
     email: str = Field(min_length=1, max_length=320)
     role: str | None = Field(default=None, max_length=200)
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_client_person_id(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "id" in value:
+            raise ValueError("person id is assigned by the server")
+        return value
+
     def to_domain(self) -> Person:
-        person = Person.create(name=self.name, email=self.email, role=self.role)
-        return person.model_copy(update={"id": self.id}) if self.id else person
+        return Person.create(name=self.name, email=self.email, role=self.role)
 
 
 class PersonResponse(APIModel):
@@ -93,6 +98,7 @@ class WorkflowResponse(APIModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
     id: UUID
+    organization_id: UUID
     name: str
     workflow_type: WorkflowType
     status: WorkflowStatus
@@ -143,24 +149,18 @@ class RequirementTransitionRequest(APIModel):
 
 class RequirementReviewRequest(APIModel):
     action: RequirementReviewAction
-    reviewer: PersonInput | None = None
     note: str | None = None
     reason: str | None = None
 
     @model_validator(mode="after")
     def validate_action_fields(self) -> RequirementReviewRequest:
-        if self.action in {
-            RequirementReviewAction.APPROVE,
-            RequirementReviewAction.REJECT,
-        } and self.reviewer is None:
-            raise ValueError("reviewer is required for approval or rejection")
         if (
             self.action == RequirementReviewAction.REJECT
             and (self.reason is None or not self.reason.strip())
         ):
             raise ValueError("reason is required for rejection")
         if self.action == RequirementReviewAction.RESUBMIT and any(
-            value is not None for value in (self.reviewer, self.note, self.reason)
+            value is not None for value in (self.note, self.reason)
         ):
             raise ValueError("resubmit accepts only the action field")
         return self

@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -70,6 +71,36 @@ class PersonRecord(Base):
     role: Mapped[str | None] = mapped_column(String(200))
 
 
+class OrganizationRecord(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class OrganizationMembershipRecord(Base):
+    __tablename__ = "organization_memberships"
+    __table_args__ = (
+        Index(
+            "ix_organization_memberships_user_active",
+            "user_id",
+            "is_active",
+        ),
+    )
+
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+    )
+
+
 class WorkflowRecord(Base):
     __tablename__ = "workflows"
     __table_args__ = (
@@ -85,6 +116,12 @@ class WorkflowRecord(Base):
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     workflow_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False)

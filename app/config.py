@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     database_url: SecretStr | None = None
 
+    auth_issuer: str | None = None
+    auth_audience: str | None = None
+    auth_jwks_url: str | None = None
+
     supabase_url: str | None = None
     supabase_anon_key: SecretStr | None = None
     supabase_service_role_key: SecretStr | None = None

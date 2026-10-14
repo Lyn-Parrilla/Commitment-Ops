@@ -4,6 +4,12 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.auth import (
+    AuthenticationConfigurationError,
+    AuthenticationError,
+    AuthenticationServiceError,
+    OrganizationAccessDeniedError,
+)
 from app.api.schemas import ErrorDetail, ErrorResponse, validation_issues
 from app.application import ResourceNotFoundError
 from app.domain import DomainValidationError, InvalidTransitionError
@@ -11,6 +17,42 @@ from app.persistence import InvalidAssociationError, PersistenceError
 
 
 def register_error_handlers(application: FastAPI) -> None:
+    @application.exception_handler(AuthenticationError)
+    async def authentication_handler(
+        _: Request,
+        __: AuthenticationError,
+    ) -> JSONResponse:
+        response = _response(
+            401,
+            code="authentication_required",
+            message="Valid bearer authentication is required",
+        )
+        response.headers["WWW-Authenticate"] = "Bearer"
+        return response
+
+    @application.exception_handler(AuthenticationConfigurationError)
+    @application.exception_handler(AuthenticationServiceError)
+    async def authentication_unavailable_handler(
+        _: Request,
+        __: AuthenticationConfigurationError | AuthenticationServiceError,
+    ) -> JSONResponse:
+        return _response(
+            503,
+            code="authentication_unavailable",
+            message="Authentication is temporarily unavailable",
+        )
+
+    @application.exception_handler(OrganizationAccessDeniedError)
+    async def organization_access_denied_handler(
+        _: Request,
+        __: OrganizationAccessDeniedError,
+    ) -> JSONResponse:
+        return _response(
+            403,
+            code="organization_access_denied",
+            message="Active organization membership is required",
+        )
+
     @application.exception_handler(RequestValidationError)
     async def request_validation_handler(
         _: Request,

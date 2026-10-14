@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 from app.domain import RequirementStatus, ReviewStatus, WorkflowStatus
 from app.persistence import WorkflowRepository
 
+ORGANIZATION_ID = UUID("30000000-0000-0000-0000-000000000001")
+
 
 def test_create_and_retrieve_workflow(api_client: TestClient) -> None:
     created = _create_workflow(
@@ -59,7 +61,7 @@ def test_add_requirement_persists_complete_accountability_data(
 
     assert response.status_code == 201
     requirement = response.json()
-    reloaded = api_repository.get(UUID(workflow["id"]))
+    reloaded = _get(api_repository, UUID(workflow["id"]))
     assert reloaded is not None
     persisted = reloaded.requirements[0]
     assert str(persisted.id) == requirement["id"]
@@ -78,7 +80,7 @@ def test_ai_inferred_requirement_cannot_start_before_human_approval(
     workflow = _create_workflow(api_client)
     requirement = _add_requirement(api_client, workflow["id"])
     audit_count = len(
-        api_repository.list_audit_events(UUID(workflow["id"]))
+        _events(api_repository, UUID(workflow["id"]))
     )
 
     response = api_client.post(
@@ -88,11 +90,11 @@ def test_ai_inferred_requirement_cannot_start_before_human_approval(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "invalid_transition"
-    reloaded = api_repository.get(UUID(workflow["id"]))
+    reloaded = _get(api_repository, UUID(workflow["id"]))
     assert reloaded is not None
     assert reloaded.requirements[0].status == RequirementStatus.NOT_STARTED
     assert reloaded.requirements[0].review_status == ReviewStatus.PENDING_REVIEW
-    assert len(api_repository.list_audit_events(reloaded.id)) == audit_count
+    assert len(_events(api_repository, reloaded.id)) == audit_count
 
 
 def test_pending_ai_requirement_cannot_be_cancelled_or_audited(
@@ -102,7 +104,7 @@ def test_pending_ai_requirement_cannot_be_cancelled_or_audited(
     workflow = _create_workflow(api_client)
     requirement = _add_requirement(api_client, workflow["id"])
     workflow_id = UUID(workflow["id"])
-    audit_count = len(api_repository.list_audit_events(workflow_id))
+    audit_count = len(_events(api_repository, workflow_id))
 
     response = api_client.post(
         _requirement_transition_url(workflow["id"], requirement["id"]),
@@ -111,12 +113,12 @@ def test_pending_ai_requirement_cannot_be_cancelled_or_audited(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "invalid_transition"
-    reloaded = api_repository.get(workflow_id)
+    reloaded = _get(api_repository, workflow_id)
     assert reloaded is not None
     persisted = reloaded.requirements[0]
     assert persisted.status == RequirementStatus.NOT_STARTED
     assert persisted.review_status == ReviewStatus.PENDING_REVIEW
-    assert len(api_repository.list_audit_events(workflow_id)) == audit_count
+    assert len(_events(api_repository, workflow_id)) == audit_count
 
 
 def test_approved_requirement_can_be_cancelled(
@@ -129,13 +131,7 @@ def test_approved_requirement_can_be_cancelled(
 
     approval = api_client.post(
         review_url,
-        json={
-            "action": "approve",
-            "reviewer": _person_payload(
-                name="Synthetic Reviewer",
-                email="reviewer@example.org",
-            ),
-        },
+        json={"action": "approve"},
     )
     cancellation = api_client.post(
         _requirement_transition_url(workflow["id"], requirement["id"]),
@@ -146,7 +142,7 @@ def test_approved_requirement_can_be_cancelled(
     assert cancellation.status_code == 200
     assert cancellation.json()["status"] == "cancelled"
     assert cancellation.json()["review_status"] == "approved"
-    reloaded = api_repository.get(UUID(workflow["id"]))
+    reloaded = _get(api_repository, UUID(workflow["id"]))
     assert reloaded is not None
     assert reloaded.requirements[0].status == RequirementStatus.CANCELLED
     assert reloaded.requirements[0].review_status == ReviewStatus.APPROVED
@@ -163,11 +159,6 @@ def test_explicit_approval_enables_valid_requirement_transitions(
         _requirement_review_url(workflow["id"], requirement["id"]),
         json={
             "action": "approve",
-            "reviewer": _person_payload(
-                name="Synthetic Reviewer",
-                email="reviewer@example.org",
-                role="Compliance Officer",
-            ),
             "note": "Confirmed against the synthetic agreement.",
         },
     )
@@ -187,12 +178,12 @@ def test_explicit_approval_enables_valid_requirement_transitions(
     assert started.json()["status"] == "in_progress"
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
-    reloaded = api_repository.get(UUID(workflow["id"]))
+    reloaded = _get(api_repository, UUID(workflow["id"]))
     assert reloaded is not None
     assert reloaded.requirements[0].status == RequirementStatus.COMPLETED
     assert all(
-        event.actor_reference is None
-        for event in api_repository.list_audit_events(reloaded.id)
+        event.actor_reference == "20000000-0000-0000-0000-000000000001"
+        for event in _events(api_repository, reloaded.id)
     )
 
 
@@ -207,10 +198,6 @@ def test_rejection_and_resubmission_preserve_review_boundary(
         review_url,
         json={
             "action": "reject",
-            "reviewer": _person_payload(
-                name="Synthetic Reviewer",
-                email="reviewer@example.org",
-            ),
             "reason": "Not supported by the synthetic source.",
         },
     )
@@ -230,7 +217,7 @@ def test_invalid_transition_is_consistent_and_atomic(
 ) -> None:
     workflow = _create_workflow(api_client)
     workflow_id = UUID(workflow["id"])
-    events_before = api_repository.list_audit_events(workflow_id)
+    events_before = _events(api_repository, workflow_id)
 
     response = api_client.post(
         f"/api/v1/workflows/{workflow['id']}/transitions",
@@ -244,10 +231,10 @@ def test_invalid_transition_is_consistent_and_atomic(
             "message": "cannot complete a workflow in status draft",
         }
     }
-    reloaded = api_repository.get(workflow_id)
+    reloaded = _get(api_repository, workflow_id)
     assert reloaded is not None
     assert reloaded.status == WorkflowStatus.DRAFT
-    assert api_repository.list_audit_events(workflow_id) == events_before
+    assert _events(api_repository, workflow_id) == events_before
 
 
 def test_missing_workflow_and_requirement_return_404(
@@ -369,4 +356,18 @@ def _requirement_review_url(workflow_id: str, requirement_id: str) -> str:
     return (
         f"/api/v1/workflows/{workflow_id}/requirements/"
         f"{requirement_id}/review"
+    )
+
+
+def _get(repository: WorkflowRepository, workflow_id: UUID):
+    return repository.get(
+        workflow_id,
+        organization_id=ORGANIZATION_ID,
+    )
+
+
+def _events(repository: WorkflowRepository, workflow_id: UUID):
+    return repository.list_audit_events(
+        workflow_id,
+        organization_id=ORGANIZATION_ID,
     )

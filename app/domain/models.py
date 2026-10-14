@@ -262,12 +262,23 @@ class Workflow(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     name: str
     workflow_type: WorkflowType
+    organization_id: UUID | None = None
     status: WorkflowStatus = WorkflowStatus.DRAFT
     requirements: list[Requirement] = Field(default_factory=list)
 
     @classmethod
-    def create(cls, *, name: str, workflow_type: WorkflowType) -> Workflow:
-        return cls(name=_require_text(name, "name"), workflow_type=workflow_type)
+    def create(
+        cls,
+        *,
+        name: str,
+        workflow_type: WorkflowType,
+        organization_id: UUID | None = None,
+    ) -> Workflow:
+        return cls(
+            name=_require_text(name, "name"),
+            workflow_type=workflow_type,
+            organization_id=organization_id,
+        )
 
     def add_requirement(self, requirement: Requirement) -> None:
         if self.status in {WorkflowStatus.COMPLETED, WorkflowStatus.CANCELLED}:

@@ -141,7 +141,6 @@ def review_requirement(
         workflow_id,
         requirement_id,
         payload.action,
-        reviewer=payload.reviewer.to_domain() if payload.reviewer else None,
         note=payload.note,
         reason=payload.reason,
     )

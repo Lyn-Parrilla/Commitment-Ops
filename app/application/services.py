@@ -12,7 +12,6 @@ from app.application.exceptions import (
     WorkflowNotFoundError,
 )
 from app.domain import (
-    DomainValidationError,
     Person,
     Requirement,
     RequirementProvenance,
@@ -57,14 +56,28 @@ class AddRequirementCommand:
 class WorkflowService:
     """Focused use cases for the authoritative workflow aggregate."""
 
-    def __init__(self, repository: WorkflowRepository) -> None:
+    def __init__(
+        self,
+        repository: WorkflowRepository,
+        *,
+        organization_id: UUID,
+        actor_reference: str,
+        reviewer: Person,
+    ) -> None:
         self._repository = repository
+        self._organization_id = organization_id
+        self._actor_reference = actor_reference
+        self._reviewer = reviewer
 
     def create_workflow(
         self, *, name: str, workflow_type: WorkflowType
     ) -> Workflow:
-        workflow = Workflow.create(name=name, workflow_type=workflow_type)
-        self._repository.save(workflow)
+        workflow = Workflow.create(
+            name=name,
+            workflow_type=workflow_type,
+            organization_id=self._organization_id,
+        )
+        self._save(workflow)
         return workflow
 
     def list_workflows(
@@ -74,12 +87,16 @@ class WorkflowService:
         workflow_type: WorkflowType | None = None,
     ) -> list[Workflow]:
         return self._repository.list(
+            organization_id=self._organization_id,
             status=status,
             workflow_type=workflow_type,
         )
 
     def get_workflow(self, workflow_id: UUID) -> Workflow:
-        workflow = self._repository.get(workflow_id)
+        workflow = self._repository.get(
+            workflow_id,
+            organization_id=self._organization_id,
+        )
         if workflow is None:
             raise WorkflowNotFoundError(workflow_id)
         return workflow
@@ -101,7 +118,7 @@ class WorkflowService:
             target=command.target,
         )
         workflow.add_requirement(requirement)
-        self._repository.save(workflow)
+        self._save(workflow)
         return requirement
 
     def transition_workflow(
@@ -116,7 +133,7 @@ class WorkflowService:
             WorkflowTransition.CANCEL: workflow.cancel,
         }
         operations[transition]()
-        self._repository.save(workflow)
+        self._save(workflow)
         return workflow
 
     def transition_requirement(
@@ -134,7 +151,7 @@ class WorkflowService:
             RequirementTransition.CANCEL: requirement.cancel,
         }
         operations[transition]()
-        self._repository.save(workflow)
+        self._save(workflow)
         return requirement
 
     def review_requirement(
@@ -143,7 +160,6 @@ class WorkflowService:
         requirement_id: UUID,
         action: RequirementReviewAction,
         *,
-        reviewer: Person | None = None,
         note: str | None = None,
         reason: str | None = None,
     ) -> Requirement:
@@ -151,18 +167,20 @@ class WorkflowService:
         requirement = _find_requirement(workflow, requirement_id)
 
         if action == RequirementReviewAction.APPROVE:
-            if reviewer is None:
-                raise DomainValidationError("reviewer is required for approval")
-            requirement.approve(reviewer=reviewer, note=note)
+            requirement.approve(reviewer=self._reviewer, note=note)
         elif action == RequirementReviewAction.REJECT:
-            if reviewer is None:
-                raise DomainValidationError("reviewer is required for rejection")
-            requirement.reject(reviewer=reviewer, reason=reason or "")
+            requirement.reject(reviewer=self._reviewer, reason=reason or "")
         else:
             requirement.submit_for_review()
 
-        self._repository.save(workflow)
+        self._save(workflow)
         return requirement
+
+    def _save(self, workflow: Workflow) -> None:
+        self._repository.save(
+            workflow,
+            actor_reference=self._actor_reference,
+        )
 
 
 def _find_requirement(workflow: Workflow, requirement_id: UUID) -> Requirement:

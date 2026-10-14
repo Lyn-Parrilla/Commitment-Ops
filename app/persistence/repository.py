@@ -26,6 +26,8 @@ from app.persistence.exceptions import InvalidAssociationError, PersistenceError
 from app.persistence.orm import (
     AuditEventRecord,
     EvidenceRecord,
+    OrganizationMembershipRecord,
+    OrganizationRecord,
     PersonRecord,
     RequirementRecord,
     WorkflowRecord,
@@ -45,6 +47,83 @@ class AuditEvent:
     correlation_id: str | None
 
 
+@dataclass(frozen=True)
+class Organization:
+    id: UUID
+    name: str
+
+
+class OrganizationRepository:
+    """Persist organizations and resolve active user memberships."""
+
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    def save(self, organization: Organization) -> None:
+        try:
+            with self._session_factory.begin() as session:
+                record = session.get(OrganizationRecord, organization.id)
+                if record is None:
+                    session.add(
+                        OrganizationRecord(
+                            id=organization.id,
+                            name=organization.name,
+                        )
+                    )
+                else:
+                    record.name = organization.name
+        except SQLAlchemyError as exc:
+            raise PersistenceError("organization persistence failed") from exc
+
+    def set_membership(
+        self,
+        *,
+        organization_id: UUID,
+        user_id: UUID,
+        is_active: bool,
+    ) -> None:
+        try:
+            with self._session_factory.begin() as session:
+                record = session.get(
+                    OrganizationMembershipRecord,
+                    (organization_id, user_id),
+                )
+                if record is None:
+                    session.add(
+                        OrganizationMembershipRecord(
+                            organization_id=organization_id,
+                            user_id=user_id,
+                            is_active=is_active,
+                        )
+                    )
+                else:
+                    record.is_active = is_active
+        except SQLAlchemyError as exc:
+            raise PersistenceError("membership persistence failed") from exc
+
+    def has_active_membership(
+        self,
+        *,
+        organization_id: UUID,
+        user_id: UUID,
+    ) -> bool:
+        try:
+            with self._session_factory() as session:
+                return (
+                    session.scalar(
+                        select(OrganizationMembershipRecord).where(
+                            OrganizationMembershipRecord.organization_id
+                            == organization_id,
+                            OrganizationMembershipRecord.user_id == user_id,
+                            OrganizationMembershipRecord.is_active.is_(True),
+                        )
+                    )
+                    is not None
+                )
+        except SQLAlchemyError as exc:
+            raise PersistenceError("membership lookup failed") from exc
+
+
 class WorkflowRepository:
     """Persist a workflow and its accountability records as one transaction."""
 
@@ -58,6 +137,10 @@ class WorkflowRepository:
         actor_reference: str | None = None,
         correlation_id: str | None = None,
     ) -> None:
+        if workflow.organization_id is None:
+            raise InvalidAssociationError(
+                "workflow must belong to an organization"
+            )
         self._validate_aggregate(workflow)
         try:
             with self._session_factory.begin() as session:
@@ -85,20 +168,31 @@ class WorkflowRepository:
         except SQLAlchemyError as exc:
             raise PersistenceError("workflow persistence failed") from exc
 
-    def get(self, workflow_id: UUID) -> Workflow | None:
+    def get(
+        self,
+        workflow_id: UUID,
+        *,
+        organization_id: UUID,
+    ) -> Workflow | None:
         with self._session_factory() as session:
             record = session.scalar(
-                _workflow_select().where(WorkflowRecord.id == workflow_id)
+                _workflow_select().where(
+                    WorkflowRecord.id == workflow_id,
+                    WorkflowRecord.organization_id == organization_id,
+                )
             )
             return _to_domain(record) if record else None
 
     def list(
         self,
         *,
+        organization_id: UUID,
         status: WorkflowStatus | None = None,
         workflow_type: WorkflowType | None = None,
     ) -> list[Workflow]:
-        statement = _workflow_select()
+        statement = _workflow_select().where(
+            WorkflowRecord.organization_id == organization_id
+        )
         if status is not None:
             statement = statement.where(WorkflowRecord.status == status.value)
         if workflow_type is not None:
@@ -112,12 +206,22 @@ class WorkflowRepository:
                 for record in session.scalars(statement).unique().all()
             ]
 
-    def list_audit_events(self, workflow_id: UUID) -> list[AuditEvent]:
+    def list_audit_events(
+        self,
+        workflow_id: UUID,
+        *,
+        organization_id: UUID,
+    ) -> list[AuditEvent]:
         statement = (
             select(AuditEventRecord)
+            .join(
+                WorkflowRecord,
+                WorkflowRecord.id == AuditEventRecord.entity_id,
+            )
             .where(
                 AuditEventRecord.entity_type == "workflow",
                 AuditEventRecord.entity_id == workflow_id,
+                WorkflowRecord.organization_id == organization_id,
             )
             .order_by(AuditEventRecord.occurred_at, AuditEventRecord.id)
         )
@@ -165,8 +269,15 @@ class WorkflowRepository:
                 )
 
         if existing is None:
-            existing = WorkflowRecord(id=workflow.id)
+            existing = WorkflowRecord(
+                id=workflow.id,
+                organization_id=workflow.organization_id,
+            )
             session.add(existing)
+        elif existing.organization_id != workflow.organization_id:
+            raise InvalidAssociationError(
+                "workflow cannot move between organizations"
+            )
         existing.name = workflow.name
         existing.workflow_type = workflow.workflow_type.value
         existing.status = workflow.status.value
@@ -427,6 +538,7 @@ def _to_domain(record: WorkflowRecord) -> Workflow:
         id=record.id,
         name=record.name,
         workflow_type=WorkflowType(record.workflow_type),
+        organization_id=record.organization_id,
         status=WorkflowStatus(record.status),
         requirements=requirements,
     )
@@ -435,6 +547,7 @@ def _to_domain(record: WorkflowRecord) -> Workflow:
 def _audit_snapshot(workflow: Workflow) -> dict[str, Any]:
     return {
         "id": str(workflow.id),
+        "organization_id": str(workflow.organization_id),
         "workflow_type": workflow.workflow_type.value,
         "status": workflow.status.value,
         "requirements": [
