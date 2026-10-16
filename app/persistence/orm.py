@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     Uuid,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -98,6 +99,7 @@ class OrganizationMembershipRecord(Base):
         Boolean,
         nullable=False,
         default=True,
+        server_default=true(),
     )
 
 

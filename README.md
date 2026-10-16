@@ -143,9 +143,63 @@ the entire save. Persisted identifiers and review state are reconstructed
 without promoting pending AI-inferred requirements.
 
 PostgreSQL is the production target and is compatible with Supabase PostgreSQL.
-The standard suite uses isolated SQLite files and injects its migration URL
-within the test, so it never uses an externally configured production URL.
-Application startup also does not connect automatically.
+The standard suite uses isolated SQLite files. Alembic uses an explicit URL
+when the migration config already has one, and otherwise uses `DATABASE_URL`.
+Application startup does not connect or apply migrations.
+
+### PostgreSQL integration tests
+
+Unit tests do not need PostgreSQL:
+
+```bash
+pytest
+pytest -m "not postgres"
+```
+
+PostgreSQL integration tests are marked `postgres`. They read only
+`TEST_DATABASE_URL`, from the process environment or from that exact key in
+the untracked `.env` file. They never read `DATABASE_URL` and do not fall
+back to it. When `TEST_DATABASE_URL` is absent, those tests skip. The SQLite
+suite, SQLite migration behavior, and offline PostgreSQL SQL rendering still
+run. A skipped integration run does not verify a live PostgreSQL migration,
+`alembic check` against PostgreSQL, or Supabase.
+
+```bash
+pytest -m postgres
+```
+
+`TEST_DATABASE_URL` must be a PostgreSQL URL for a database where a new schema
+can be created. A URL is not treated as safe because it contains the word
+`test`. Before any schema change, the harness:
+
+- rejects SQLite, template databases, and any schema other than a new
+  `commitmentops_test_` plus 16 hex characters;
+- rejects Supabase-managed names, including `public`, `auth`, `storage`,
+  `extensions`, `graphql`, `realtime`, and `supabase_migrations`;
+- creates one schema that does not already exist;
+- pins Alembic's version table and application connections to that schema;
+- drops only that schema afterward, and only after the catalog name and
+  the session's current schema both match it, `public` is still present,
+  and no other schema references it.
+
+Application connections for that schema set `search_path` at startup and
+again on connect. A checkout whose current schema does not match is refused
+before use. Row cleanup is schema-qualified, so it does not follow a reset
+`search_path` back to `public`. Supabase permission to create this schema has
+not been verified. Leave `TEST_DATABASE_URL` unset until an isolated target
+is confirmed; the integration tests then skip and do not connect.
+
+If isolation cannot be established, the test fails closed. It does not migrate,
+truncate, or drop `public`.
+
+Keep connection strings out of Git. Put `DATABASE_URL` in the untracked `.env`
+or in the host environment. Set `TEST_DATABASE_URL` separately, with no real
+value in `.env.example`.
+
+Do not publicly deploy this application with real or sensitive data until the
+remaining security and operational gaps are addressed. Those include row-level
+security, membership administration, token revocation, and production
+provisioning.
 
 Set `DATABASE_URL` only through local or deployment environment configuration.
 Conventional `postgresql://` provider URLs are normalized to the psycopg 3
@@ -192,12 +246,24 @@ Railway should supply `DATABASE_URL` through service variables. Alembic uses
 that same value; no connection string or credential belongs in Git. Production
 schema changes must use migrations rather than runtime table creation.
 
-Downgrading the tenant migration is refused while any membership or workflow
-assignment outside the legacy placeholder organization exists. Export or
-deliberately remove those assignments first. A downgrade that is allowed still
-drops the organization tables and the workflow organization column; it cannot
-reconstruct earlier tenant assignments. An organization row that has neither
-memberships nor workflow assignments is not covered by the guard.
+The legacy placeholder is identified by the UUID
+`00000000-0000-0000-0000-000000000001`, not by its name. The upgrade inserts
+that UUID as "Legacy Unassigned" and assigns pre-existing workflows to it.
+Later renames do not create a new organization, so the guard still treats
+that row as the placeholder. Downgrade is refused while any other
+organization UUID exists, including an organization with no memberships and
+no workflows, while any membership exists on any organization, or while any
+workflow is assigned outside the placeholder UUID. Those checks run before
+any table or column is dropped, so a nonlegacy organization row cannot be
+discarded by this downgrade. Export or deliberately remove those tenant
+records first.
+
+A renamed placeholder can still be downgraded when it is the only
+organization, it has no memberships, and every workflow uses its UUID. That
+downgrade drops the organizations table, including the edited name, and
+removes `workflows.organization_id`. The workflow rows remain, without a
+tenant assignment. The name is not recovered. Continuing below this revision
+then drops the earlier accountability tables as well.
 
 Every successful repository save appends a workflow audit event in the same
 transaction. Events contain an event identifier and UTC timestamp, workflow
@@ -408,7 +474,12 @@ Run tests:
 
 ```bash
 pytest
+pytest -m "not postgres"
 ```
+
+`pytest` runs the SQLite unit tests. PostgreSQL integration tests run only
+when `TEST_DATABASE_URL` is set; otherwise they skip. See Persistence and
+audit foundation for the isolation rules.
 
 ## Configuration
 
@@ -422,6 +493,7 @@ Authentication configuration is required when serving protected API requests.
 | `LOG_LEVEL` | Process log level |
 | `PORT` | HTTP port (Railway sets this; local default is 8000) |
 | `DATABASE_URL` | PostgreSQL connection URL for persistence and Alembic |
+| `TEST_DATABASE_URL` | Optional PostgreSQL URL used only by integration tests |
 | `AUTH_ISSUER` | Exact trusted JWT issuer |
 | `AUTH_AUDIENCE` | Required JWT audience, normally `authenticated` for Supabase |
 | `AUTH_JWKS_URL` | Trusted public JWKS endpoint for signing-key lookup |
@@ -440,6 +512,9 @@ Alembic migration and bootstrap organization membership deliberately before
 serving protected traffic.
 
 ## What this foundation does not include
+
+Do not publicly deploy this application with real or sensitive data until the
+remaining security and operational gaps are addressed.
 
 Dashboard UI, role-based or administrative authorization,
 membership-management endpoints, database row-level security, production

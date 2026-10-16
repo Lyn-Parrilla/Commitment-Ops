@@ -21,7 +21,7 @@ from app.domain.enums import (
     WorkflowType,
 )
 from app.domain.models import Evidence, Person, Requirement, Workflow
-from app.persistence.database import SessionFactory
+from app.persistence.database import SessionFactory, raise_persistence_failure
 from app.persistence.exceptions import InvalidAssociationError, PersistenceError
 from app.persistence.orm import (
     AuditEventRecord,
@@ -73,7 +73,7 @@ class OrganizationRepository:
                 else:
                     record.name = organization.name
         except SQLAlchemyError as exc:
-            raise PersistenceError("organization persistence failed") from exc
+            raise_persistence_failure("organization persistence failed", exc)
 
     def set_membership(
         self,
@@ -99,7 +99,7 @@ class OrganizationRepository:
                 else:
                     record.is_active = is_active
         except SQLAlchemyError as exc:
-            raise PersistenceError("membership persistence failed") from exc
+            raise_persistence_failure("membership persistence failed", exc)
 
     def has_active_membership(
         self,
@@ -121,7 +121,7 @@ class OrganizationRepository:
                     is not None
                 )
         except SQLAlchemyError as exc:
-            raise PersistenceError("membership lookup failed") from exc
+            raise_persistence_failure("membership lookup failed", exc)
 
 
 class WorkflowRepository:
@@ -166,7 +166,7 @@ class WorkflowRepository:
         except PersistenceError:
             raise
         except SQLAlchemyError as exc:
-            raise PersistenceError("workflow persistence failed") from exc
+            raise_persistence_failure("workflow persistence failed", exc)
 
     def get(
         self,
@@ -174,14 +174,17 @@ class WorkflowRepository:
         *,
         organization_id: UUID,
     ) -> Workflow | None:
-        with self._session_factory() as session:
-            record = session.scalar(
-                _workflow_select().where(
-                    WorkflowRecord.id == workflow_id,
-                    WorkflowRecord.organization_id == organization_id,
+        try:
+            with self._session_factory() as session:
+                record = session.scalar(
+                    _workflow_select().where(
+                        WorkflowRecord.id == workflow_id,
+                        WorkflowRecord.organization_id == organization_id,
+                    )
                 )
-            )
-            return _to_domain(record) if record else None
+                return _to_domain(record) if record else None
+        except SQLAlchemyError as exc:
+            raise_persistence_failure("workflow lookup failed", exc)
 
     def list(
         self,
@@ -200,11 +203,14 @@ class WorkflowRepository:
                 WorkflowRecord.workflow_type == workflow_type.value
             )
         statement = statement.order_by(WorkflowRecord.name, WorkflowRecord.id)
-        with self._session_factory() as session:
-            return [
-                _to_domain(record)
-                for record in session.scalars(statement).unique().all()
-            ]
+        try:
+            with self._session_factory() as session:
+                return [
+                    _to_domain(record)
+                    for record in session.scalars(statement).unique().all()
+                ]
+        except SQLAlchemyError as exc:
+            raise_persistence_failure("workflow lookup failed", exc)
 
     def list_audit_events(
         self,
@@ -225,21 +231,24 @@ class WorkflowRepository:
             )
             .order_by(AuditEventRecord.occurred_at, AuditEventRecord.id)
         )
-        with self._session_factory() as session:
-            return [
-                AuditEvent(
-                    id=record.id,
-                    occurred_at=record.occurred_at,
-                    entity_type=record.entity_type,
-                    entity_id=record.entity_id,
-                    event_type=record.event_type,
-                    before_state=record.before_state,
-                    after_state=record.after_state,
-                    actor_reference=record.actor_reference,
-                    correlation_id=record.correlation_id,
-                )
-                for record in session.scalars(statement)
-            ]
+        try:
+            with self._session_factory() as session:
+                return [
+                    AuditEvent(
+                        id=record.id,
+                        occurred_at=record.occurred_at,
+                        entity_type=record.entity_type,
+                        entity_id=record.entity_id,
+                        event_type=record.event_type,
+                        before_state=record.before_state,
+                        after_state=record.after_state,
+                        actor_reference=record.actor_reference,
+                        correlation_id=record.correlation_id,
+                    )
+                    for record in session.scalars(statement)
+                ]
+        except SQLAlchemyError as exc:
+            raise_persistence_failure("audit lookup failed", exc)
 
     def _save_aggregate(
         self,

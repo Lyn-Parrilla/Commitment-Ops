@@ -93,6 +93,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
+    organizations = sa.table(
+        "organizations",
+        sa.column("id", sa.Uuid()),
+    )
     workflows = sa.table(
         "workflows",
         sa.column("organization_id", sa.Uuid()),
@@ -100,6 +104,11 @@ def downgrade() -> None:
     memberships = sa.table(
         "organization_memberships",
         sa.column("organization_id", sa.Uuid()),
+    )
+    nonlegacy_organizations = connection.scalar(
+        sa.select(sa.func.count())
+        .select_from(organizations)
+        .where(organizations.c.id != LEGACY_ORGANIZATION_ID)
     )
     assigned_workflows = connection.scalar(
         sa.select(sa.func.count())
@@ -109,11 +118,19 @@ def downgrade() -> None:
     membership_count = connection.scalar(
         sa.select(sa.func.count()).select_from(memberships)
     )
-    if assigned_workflows or membership_count:
+    if (
+        nonlegacy_organizations is None
+        or assigned_workflows is None
+        or membership_count is None
+        or nonlegacy_organizations
+        or assigned_workflows
+        or membership_count
+    ):
         raise RuntimeError(
-            "Refusing to downgrade while organization memberships or "
-            "non-legacy workflow assignments exist. Export or deliberately "
-            "remove those tenant assignments before downgrading."
+            "Refusing to downgrade while non-legacy organizations, "
+            "organization memberships, or non-legacy workflow assignments "
+            "exist. Export or deliberately remove those tenant records "
+            "before downgrading."
         )
 
     with op.batch_alter_table("workflows") as batch_op:
