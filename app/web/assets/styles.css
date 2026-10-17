@@ -1,0 +1,212 @@
+:root {
+  --primary: #1b3a4b;
+  --accent: #b08d57;
+  --ink: #1c2430;
+  --muted: #5c6670;
+  --line: #e4ddd4;
+  --paper: #f4f1ec;
+  --card: #fffcf8;
+  --danger: #8c2f2f;
+  --danger-bg: #f8ecec;
+  --ok: #1f6b4a;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, rgba(176, 141, 87, 0.16), transparent 55%),
+    var(--paper);
+}
+
+button, input, select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a { color: var(--primary); }
+
+.app-header, .page, .sign-in {
+  width: min(1080px, calc(100% - 2rem));
+  margin-inline: auto;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.brand img, .monogram {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.45rem;
+  flex: none;
+}
+
+.monogram {
+  display: grid;
+  place-items: center;
+  background: var(--primary);
+  color: white;
+  font-family: Palatino, "Iowan Old Style", Georgia, serif;
+  font-size: 1.1rem;
+}
+
+.brand h1, .page h2, .sign-in h1 {
+  font-family: Palatino, "Iowan Old Style", Georgia, serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.brand h1 {
+  font-size: 1.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-actions, .toolbar, .meta, .requirement-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.page { padding-bottom: 3rem; }
+
+.page h2 { font-size: 2rem; margin-bottom: 0.35rem; }
+
+.lede, .muted { color: var(--muted); }
+
+.sign-in {
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+  padding: 2rem 0;
+}
+
+.panel, .card, .banner {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  box-shadow: 0 16px 40px rgba(27, 58, 75, 0.06);
+}
+
+.panel, .card { padding: 1.25rem 1.35rem; }
+
+.sign-in .panel {
+  width: min(28rem, 100%);
+  border-top: 4px solid var(--accent);
+}
+
+.field { display: grid; gap: 0.35rem; margin-top: 0.9rem; }
+
+.field span { font-size: 0.92rem; }
+
+input, select {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: white;
+  border-radius: 0.6rem;
+  padding: 0.7rem 0.75rem;
+  color: var(--ink);
+}
+
+input:focus, select:focus {
+  outline: 2px solid var(--accent);
+  border-color: transparent;
+}
+
+.button, .button-secondary {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.7rem 1rem;
+  text-decoration: none;
+}
+
+.button {
+  background: var(--primary);
+  color: white;
+}
+
+.button:disabled { opacity: 0.65; cursor: wait; }
+
+.button-secondary {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--line);
+}
+
+.toolbar { justify-content: space-between; margin: 1.25rem 0; }
+
+.stack { display: grid; gap: 0.75rem; }
+
+.card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.card-link:hover { border-color: var(--accent); }
+
+.card h3 { margin: 0 0 0.4rem; font-size: 1.15rem; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  background: #f3eee6;
+  color: var(--primary);
+  font-size: 0.82rem;
+}
+
+.banner {
+  padding: 0.85rem 1rem;
+  margin: 1rem 0;
+}
+
+.banner[data-tone="danger"] {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: #efd0d0;
+}
+
+.requirement { display: grid; gap: 0.35rem; }
+
+.requirement p { margin: 0.2rem 0 0; }
+
+.org-select { min-width: 12rem; }
+
+@media (max-width: 720px) {
+  .app-header, .toolbar, .header-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .page h2 { font-size: 1.6rem; }
+
+  .button, .button-secondary, .org-select { width: 100%; }
+}

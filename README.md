@@ -12,8 +12,9 @@ The HTTP foundation and first five slices are in place: a
 **deterministic accountability domain** plus an in-memory contract for source
 intake, requirement discovery, human review, and validated learning feedback,
 with durable SQL persistence, verified JWT authentication, organization
-isolation, and a versioned API for authoritative workflows. Dashboards,
-document extraction, and LLM workflows are not implemented yet.
+isolation, and a versioned API for authoritative workflows. A same-origin
+browser interface lists and creates workflows for the signed-in organization.
+Document extraction and LLM workflows are not implemented yet.
 
 ## Architecture
 
@@ -46,6 +47,7 @@ app/                 FastAPI application
   domain/            Deterministic accountability model (no HTTP)
     discovery.py     Source, candidate, completeness, review, learning signals
   persistence/       SQLAlchemy records and transactional workflow repository
+  web/               Same-origin browser interface
   main.py            Application factory
 migrations/          Alembic schema migrations
 tests/               Pytest suite
@@ -451,12 +453,62 @@ memberships; an operator must deliberately reassign and authorize that data
 before it becomes API-accessible.
 
 Clients send the verified access token and selected organization on each
-protected request:
+protected workflow request:
 
 ```text
 Authorization: Bearer <access-token>
 X-Organization-ID: <organization-uuid>
 ```
+
+The browser does not choose branding from a URL parameter. After sign-in it
+calls `GET /api/v1/organizations`, which returns only organizations where the
+token subject has an active membership, including resolved branding. Workflow
+requests still send `X-Organization-ID` for the organization the user selected
+from that list. The server continues to reject the request when that membership
+is missing or inactive.
+
+Optional branding columns may be set by the same administrative database
+process. There is no theme editor. Blank or invalid values fall back to the
+organization name, no logo, `#1B3A4B`, `#B08D57`, and no custom favicon.
+Logo and favicon values must be credential-free `https://` URLs. Colors must
+be `#RGB` or `#RRGGBB`.
+
+```sql
+UPDATE organizations
+SET display_name = '<display-name>',
+    logo_url = 'https://cdn.example/logo.png',
+    primary_color = '#1B3A4B',
+    accent_color = '#B08D57',
+    favicon_url = 'https://cdn.example/favicon.png'
+WHERE id = '<organization-uuid>';
+```
+
+Apply the branding migration with Alembic before expecting those columns.
+Startup does not run migrations.
+
+### Browser interface
+
+The interface is served by the same FastAPI process at `/`. It is a set of
+reusable views—sign-in, organization shell, workflow list, create form, and
+workflow detail—rather than a layout bound to one hostname. Embedding,
+iframes, custom domains, and cross-site authentication are not supported.
+
+Sign-in uses the Supabase Auth password grant with the publishable anon key
+from `GET /api/v1/client-config`. The service-role key is never sent to the
+browser. The sign-in screen uses default CommitmentOps branding because the
+organization is not known until the session exists. After authentication, the
+shell uses the active organization's branding.
+
+Set these Railway or local variables in addition to `DATABASE_URL` and the
+`AUTH_*` values:
+
+```bash
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_ANON_KEY=<publishable-anon-key>
+```
+
+`SUPABASE_SERVICE_ROLE_KEY` remains server-only and is not required for this
+interface. Leave it unset in the browser and out of Git.
 
 ## Development commands
 
@@ -466,6 +518,7 @@ Run the API:
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+- Browser: `http://127.0.0.1:8000/`
 - Health: `GET http://127.0.0.1:8000/health`
 - Accountability API: `http://127.0.0.1:8000/api/v1/workflows`
 - OpenAPI docs: `http://127.0.0.1:8000/docs` (disabled when `ENVIRONMENT=production`)
@@ -497,29 +550,54 @@ Authentication configuration is required when serving protected API requests.
 | `AUTH_ISSUER` | Exact trusted JWT issuer |
 | `AUTH_AUDIENCE` | Required JWT audience, normally `authenticated` for Supabase |
 | `AUTH_JWKS_URL` | Trusted public JWKS endpoint for signing-key lookup |
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_ANON_KEY` | Browser / user-scoped Supabase key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase key; never expose to clients |
+| `SUPABASE_URL` | Supabase project URL returned to the browser for Auth |
+| `SUPABASE_ANON_KEY` | Publishable Supabase key returned to the browser |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase key; never expose to clients or the interface |
 | `LLM_API_KEY` | Provider credential for structured LLM calls |
 | `LLM_API_BASE_URL` | Optional provider base URL |
 
 ## Deployment
 
-Railway can build from the `Dockerfile`. The container starts uvicorn on
-`$PORT` and expects `/health` as the liveness path. Supply `DATABASE_URL` and
-the three `AUTH_*` values through Railway service variables, not Git. Apply the
-Alembic migration and bootstrap organization membership deliberately before
-serving protected traffic.
+Railway can build from the `Dockerfile`. The image includes `app/web` and
+serves it from the same origin as the API. The container starts uvicorn on
+`$PORT` and expects `/health` as the liveness path. Supply `DATABASE_URL`,
+the three `AUTH_*` values, `SUPABASE_URL`, and `SUPABASE_ANON_KEY` through
+Railway service variables, not Git. Do not put `SUPABASE_SERVICE_ROLE_KEY` in
+frontend configuration.
+
+Before serving the new interface, from a machine that can reach the production
+database:
+
+```bash
+alembic upgrade head
+```
+
+Then bootstrap an organization and active membership if that has not already
+been done, and optionally set branding with the SQL above. Application startup
+does not apply migrations. Existing organization and membership rows are kept;
+the branding columns are added as null.
+
+Manual deployment after review:
+
+1. Commit and push the reviewed changes.
+2. Confirm Railway has `DATABASE_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE`,
+   `AUTH_JWKS_URL`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY`.
+3. Deploy the service from the Dockerfile.
+4. Run `alembic upgrade head` against the production database. Do not rely on
+   process startup to do this.
+5. Open the Railway domain, sign in with a Supabase user that has an active
+   membership, and confirm the workflow list.
 
 ## What this foundation does not include
 
 Do not publicly deploy this application with real or sensitive data until the
 remaining security and operational gaps are addressed.
 
-Dashboard UI, role-based or administrative authorization,
-membership-management endpoints, database row-level security, production
-Supabase provisioning, persistence for discovery/learning objects, grant
-parsing, document extraction, CSV ingestion, LLM client code, embeddings,
+Role-based or administrative authorization, membership-management endpoints,
+a theme editor, embedding or custom domains, database row-level security,
+production Supabase provisioning, persistence for discovery/learning objects,
+grant parsing, document extraction, CSV ingestion, LLM client code, embeddings,
 recognition engines, RAG, model training/retraining, scheduled reports, email
-delivery, behavioral analysis, and multiple-approver workflows. Those belong
-in subsequent, test-backed slices.
+delivery, behavioral analysis, and multiple-approver workflows. Document and
+requirement discovery remains separate from the planned personalized workflow
+intelligence loop. Those belong in subsequent, test-backed slices.

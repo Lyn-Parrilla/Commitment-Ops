@@ -77,6 +77,11 @@ class OrganizationRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(300))
+    logo_url: Mapped[str | None] = mapped_column(String(2000))
+    primary_color: Mapped[str | None] = mapped_column(String(7))
+    accent_color: Mapped[str | None] = mapped_column(String(7))
+    favicon_url: Mapped[str | None] = mapped_column(String(2000))
 
 
 class OrganizationMembershipRecord(Base):

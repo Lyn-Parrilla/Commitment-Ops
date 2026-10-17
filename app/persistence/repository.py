@@ -51,6 +51,11 @@ class AuditEvent:
 class Organization:
     id: UUID
     name: str
+    display_name: str | None = None
+    logo_url: str | None = None
+    primary_color: str | None = None
+    accent_color: str | None = None
+    favicon_url: str | None = None
 
 
 class OrganizationRepository:
@@ -64,14 +69,9 @@ class OrganizationRepository:
             with self._session_factory.begin() as session:
                 record = session.get(OrganizationRecord, organization.id)
                 if record is None:
-                    session.add(
-                        OrganizationRecord(
-                            id=organization.id,
-                            name=organization.name,
-                        )
-                    )
+                    session.add(_organization_record(organization))
                 else:
-                    record.name = organization.name
+                    _apply_organization(record, organization)
         except SQLAlchemyError as exc:
             raise_persistence_failure("organization persistence failed", exc)
 
@@ -122,6 +122,58 @@ class OrganizationRepository:
                 )
         except SQLAlchemyError as exc:
             raise_persistence_failure("membership lookup failed", exc)
+
+    def list_active_for_user(self, user_id: UUID) -> list[Organization]:
+        """Return organizations where this user has an active membership."""
+
+        try:
+            with self._session_factory() as session:
+                records = session.scalars(
+                    select(OrganizationRecord)
+                    .join(
+                        OrganizationMembershipRecord,
+                        OrganizationMembershipRecord.organization_id
+                        == OrganizationRecord.id,
+                    )
+                    .where(
+                        OrganizationMembershipRecord.user_id == user_id,
+                        OrganizationMembershipRecord.is_active.is_(True),
+                    )
+                    .order_by(OrganizationRecord.name, OrganizationRecord.id)
+                ).all()
+                return [_to_organization(record) for record in records]
+        except SQLAlchemyError as exc:
+            raise_persistence_failure("organization lookup failed", exc)
+
+
+def _organization_record(organization: Organization) -> OrganizationRecord:
+    record = OrganizationRecord(id=organization.id, name=organization.name)
+    _apply_organization(record, organization)
+    return record
+
+
+def _apply_organization(
+    record: OrganizationRecord,
+    organization: Organization,
+) -> None:
+    record.name = organization.name
+    record.display_name = organization.display_name
+    record.logo_url = organization.logo_url
+    record.primary_color = organization.primary_color
+    record.accent_color = organization.accent_color
+    record.favicon_url = organization.favicon_url
+
+
+def _to_organization(record: OrganizationRecord) -> Organization:
+    return Organization(
+        id=record.id,
+        name=record.name,
+        display_name=record.display_name,
+        logo_url=record.logo_url,
+        primary_color=record.primary_color,
+        accent_color=record.accent_color,
+        favicon_url=record.favicon_url,
+    )
 
 
 class WorkflowRepository:

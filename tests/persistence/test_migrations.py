@@ -67,6 +67,89 @@ def test_initial_migration_creates_accountability_schema(
     } <= tables
 
 
+def test_branding_migration_preserves_existing_organization_records(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'branding-migration.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    command.upgrade(config, "20261014_02")
+
+    organization_id = uuid4()
+    user_id = uuid4()
+    organizations = sa.table(
+        "organizations",
+        sa.column("id", sa.Uuid()),
+        sa.column("name", sa.String()),
+    )
+    memberships = sa.table(
+        "organization_memberships",
+        sa.column("organization_id", sa.Uuid()),
+        sa.column("user_id", sa.Uuid()),
+        sa.column("is_active", sa.Boolean()),
+    )
+    engine = create_database_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.insert(organizations).values(
+                id=organization_id,
+                name="Preserved Organization",
+            )
+        )
+        connection.execute(
+            sa.insert(memberships).values(
+                organization_id=organization_id,
+                user_id=user_id,
+                is_active=True,
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    command.check(config)
+
+    branded = sa.table(
+        "organizations",
+        sa.column("id", sa.Uuid()),
+        sa.column("name", sa.String()),
+        sa.column("display_name", sa.String()),
+        sa.column("logo_url", sa.String()),
+        sa.column("primary_color", sa.String()),
+        sa.column("accent_color", sa.String()),
+        sa.column("favicon_url", sa.String()),
+    )
+    engine = create_database_engine(database_url)
+    with engine.connect() as connection:
+        row = connection.execute(
+            sa.select(
+                branded.c.name,
+                branded.c.display_name,
+                branded.c.logo_url,
+                branded.c.primary_color,
+                branded.c.accent_color,
+                branded.c.favicon_url,
+            ).where(branded.c.id == organization_id)
+        ).one()
+        membership = connection.execute(
+            sa.select(memberships.c.is_active).where(
+                memberships.c.organization_id == organization_id,
+                memberships.c.user_id == user_id,
+            )
+        ).scalar_one()
+    engine.dispose()
+    get_settings.cache_clear()
+
+    assert row.name == "Preserved Organization"
+    assert row.display_name is None
+    assert row.logo_url is None
+    assert row.primary_color is None
+    assert row.accent_color is None
+    assert row.favicon_url is None
+    assert membership is True
+
+
 def test_tenant_migration_preserves_existing_workflows_as_unassigned(
     tmp_path: Path,
     monkeypatch,
