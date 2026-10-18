@@ -566,8 +566,11 @@ superuser, has `BYPASSRLS`, or can assume a superuser, RLS-bypass,
 `CREATEROLE`, `CREATEDB`, or schema/table-owner role, including through
 indirect membership and including when that login is also the migration login.
 Missing context returns no rows. A separate restricted runtime login can be
-granted membership in `commitmentops_app` only. Authentication configuration is
-required when serving protected API requests.
+granted membership in `commitmentops_app` only. A Supabase Session Pooler
+username `<role>.<project-ref>` is accepted only when `<project-ref>` is the
+project host in `SUPABASE_URL`. The extracted role is the name that is
+validated and granted. Authentication configuration is required when serving
+protected API requests.
 
 | Variable | Purpose |
 | --- | --- |
@@ -597,10 +600,21 @@ variables, not Git. Do not put `SUPABASE_SERVICE_ROLE_KEY` in frontend
 configuration.
 
 Before serving the new interface, from a machine that can reach the production
-database:
+database, set `MIGRATION_DATABASE_URL` to a superuser or `CREATEROLE` login and
+`DATABASE_URL` to a separate restricted runtime login. Alembic opens the
+migration URL:
 
 ```bash
 alembic upgrade head
+```
+
+After that upgrade commits, run the read-only runtime preflight. It opens
+`DATABASE_URL`, compares `session_user` with the parsed runtime role, reuses
+the request-time privilege refusal, and checks membership in
+`commitmentops_app`. It grants nothing and changes no schema:
+
+```bash
+python -c "from app.persistence.rls import verify_configured_runtime_session; verify_configured_runtime_session()"
 ```
 
 Then bootstrap an organization and active membership if that has not already
@@ -611,12 +625,18 @@ the branding columns are added as null.
 Manual deployment after review:
 
 1. Commit and push the reviewed changes.
-2. Confirm Railway has `DATABASE_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE`,
-   `AUTH_JWKS_URL`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY`.
+2. Confirm Railway has separate database credentials. `DATABASE_URL` is the
+   restricted runtime login. `MIGRATION_DATABASE_URL` is a different login
+   that is a superuser or has `CREATEROLE`. Also confirm `AUTH_ISSUER`,
+   `AUTH_AUDIENCE`, `AUTH_JWKS_URL`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY`.
 3. Deploy the service from the Dockerfile.
-4. Run `alembic upgrade head` against the production database. Do not rely on
-   process startup to do this.
-5. Open the Railway domain, sign in with a Supabase user that has an active
+4. Run `alembic upgrade head` with both database variables set. Alembic uses
+   the migration login for schema changes. Do not rely on process startup to
+   do this.
+5. Run the read-only runtime preflight with `DATABASE_URL`. `session_user`
+   must be the parsed runtime role, that role must pass the existing privilege
+   checks, and it must be a member of `commitmentops_app`.
+6. Open the Railway domain, sign in with a Supabase user that has an active
    membership, and confirm the workflow list.
 
 ## What this foundation does not include

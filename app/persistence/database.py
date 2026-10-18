@@ -8,6 +8,7 @@ environment configuration.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import make_url
@@ -44,6 +45,7 @@ _DATABASE_URL = re.compile(
     r"(?i)\b(?:[a-z][a-z0-9+.-]*)://[^\s'\"<>]+"
 )
 _ROLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+_SUPABASE_PROJECT_REF = re.compile(r"^[a-z0-9]{20}$")
 RUNTIME_LOGIN_ATTRIBUTE = "commitmentops_runtime_login"
 _CONNINFO_SECRET = re.compile(
     r"(?i)\b(password|pwd|user|username|host|hostname|dbname|database)"
@@ -114,10 +116,14 @@ def configured_migration_database_url(settings: Settings | None = None) -> str:
 
 
 def runtime_database_login(settings: Settings | None = None) -> str | None:
-    """Return the PostgreSQL username from ``DATABASE_URL``.
+    """Return the PostgreSQL role named by ``DATABASE_URL``.
 
-    SQLite and an unset URL have no login. A PostgreSQL URL with a missing
-    or unusual username fails closed instead of being granted a role.
+    SQLite and an unset URL have no login. A direct username must already be
+    a plain role name. A Supabase Session Pooler username
+    ``<role>.<project-ref>`` is accepted only when ``<project-ref>`` is the
+    project in ``SUPABASE_URL``. The returned name is that role, which still
+    has to pass the catalog privilege checks. A pooler username is not
+    rewritten to ``postgres``.
     """
 
     active = settings or get_settings()
@@ -128,11 +134,43 @@ def runtime_database_login(settings: Settings | None = None) -> str | None:
     if not parsed.drivername.startswith("postgresql"):
         return None
     username = parsed.username
-    if username is None or _ROLE_NAME.fullmatch(username) is None:
+    if username is not None and _ROLE_NAME.fullmatch(username):
+        return username
+    role_name, separator, project_ref = (username or "").partition(".")
+    pooler_username = (
+        separator == "."
+        and "." not in project_ref
+        and _ROLE_NAME.fullmatch(role_name) is not None
+        and _SUPABASE_PROJECT_REF.fullmatch(project_ref) is not None
+    )
+    if pooler_username and _supabase_project_ref(active.supabase_url) == project_ref:
+        return role_name
+    if pooler_username:
         raise DatabaseConfigurationError(
-            "runtime database login is missing or not a plain role name"
+            "pooler project reference does not match the configured "
+            "Supabase project"
         )
-    return username
+    raise DatabaseConfigurationError(
+        "runtime database login is missing or not a plain role name"
+    )
+
+
+def _supabase_project_ref(url: str | None) -> str | None:
+    """Return the project reference from a hosted Supabase project URL."""
+
+    if url is None or not url.strip():
+        return None
+    parsed = urlparse(url.strip())
+    hostname = parsed.hostname
+    if parsed.scheme.lower() != "https" or hostname is None:
+        return None
+    suffix = ".supabase.co"
+    if not hostname.endswith(suffix):
+        return None
+    project_ref = hostname[: -len(suffix)]
+    if _SUPABASE_PROJECT_REF.fullmatch(project_ref) is None:
+        return None
+    return project_ref
 
 
 def migration_login_is_privileged(

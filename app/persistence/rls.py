@@ -15,13 +15,27 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.persistence.database import SessionFactory
-from app.persistence.exceptions import PersistenceError
+from app.config import Settings, get_settings
+from app.persistence.database import (
+    _ROLE_NAME,
+    SessionFactory,
+    configured_database_url,
+    create_database_engine,
+    redact_connection_secrets,
+    runtime_database_login,
+)
+from app.persistence.exceptions import DatabaseConfigurationError, PersistenceError
 
 APP_ROLE = "commitmentops_app"
 RUNTIME_LOGIN_REFUSAL = (
     "Refusing the runtime database login because it is a superuser, "
     "has BYPASSRLS, or can assume a privileged role"
+)
+RUNTIME_SESSION_MISMATCH = (
+    "runtime session_user does not match the parsed runtime role"
+)
+RUNTIME_SESSION_MEMBERSHIP = (
+    "runtime session_user cannot assume commitmentops_app"
 )
 
 
@@ -98,6 +112,58 @@ def runtime_login_block_reason(bind: object, role_name: str | None = None) -> st
     ):
         return RUNTIME_LOGIN_REFUSAL
     return None
+
+
+def verify_runtime_session(bind: object, runtime_role: str) -> None:
+    """Confirm this connection is the parsed runtime role and a member of the app role.
+
+    The connection must already be the runtime login. The check reads
+    ``session_user`` and membership. It does not set a role or change the
+    database. Membership is visible only after the migration grant commits.
+    """
+
+    if _ROLE_NAME.fullmatch(runtime_role) is None:
+        raise DatabaseConfigurationError(
+            "runtime database login is missing or not a plain role name"
+        )
+    if _dialect_name(bind) != "postgresql":
+        raise PersistenceError("runtime session preflight requires PostgreSQL")
+    session_user = bind.execute(text("SELECT session_user")).scalar()  # type: ignore[attr-defined]
+    if session_user != runtime_role:
+        raise PersistenceError(RUNTIME_SESSION_MISMATCH)
+    reason = runtime_login_block_reason(bind)
+    if reason is not None:
+        raise PersistenceError(reason)
+    is_member = bind.execute(  # type: ignore[attr-defined]
+        text("SELECT pg_has_role(session_user, :role, 'MEMBER')"),
+        {"role": APP_ROLE},
+    ).scalar()
+    if not is_member:
+        raise PersistenceError(RUNTIME_SESSION_MEMBERSHIP)
+
+
+def verify_configured_runtime_session(settings: Settings | None = None) -> None:
+    """Open ``DATABASE_URL`` and run the read-only runtime session preflight."""
+
+    active = settings or get_settings()
+    runtime_role = runtime_database_login(active)
+    if runtime_role is None:
+        raise DatabaseConfigurationError(
+            "runtime database login is missing or not a plain role name"
+        )
+    engine = create_database_engine(configured_database_url(active))
+    try:
+        with engine.connect() as connection:
+            verify_runtime_session(connection, runtime_role)
+            connection.rollback()
+    except PersistenceError:
+        raise
+    except Exception as exc:
+        raise PersistenceError(
+            "runtime session preflight could not connect"
+        ) from PersistenceError(redact_connection_secrets(str(exc)))
+    finally:
+        engine.dispose()
 
 
 def apply_tenant_context(

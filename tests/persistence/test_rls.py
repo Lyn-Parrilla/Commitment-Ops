@@ -31,8 +31,16 @@ from app.persistence import (
     create_database_engine,
     create_session_factory,
 )
+from app.config import Settings
 from app.persistence.database import quoted_isolated_schema
-from app.persistence.rls import APP_ROLE, RUNTIME_LOGIN_REFUSAL
+from app.persistence.rls import (
+    APP_ROLE,
+    RUNTIME_LOGIN_REFUSAL,
+    RUNTIME_SESSION_MEMBERSHIP,
+    RUNTIME_SESSION_MISMATCH,
+    verify_configured_runtime_session,
+    verify_runtime_session,
+)
 from tests.persistence.postgres_support import (
     LEGACY_ORGANIZATION_ID,
     SKIP_REASON,
@@ -757,6 +765,63 @@ def test_distinct_runtime_login_is_subject_to_rls() -> None:
                     pooled.rollback()
     finally:
         _drop_managed_role(admin, RUNTIME_LOGIN)
+        admin.dispose()
+
+
+def test_runtime_session_preflight_reads_session_user_without_changes() -> None:
+    url = _postgres_url()
+    admin = _admin_engine(url)
+    try:
+        _ensure_role(
+            admin,
+            RUNTIME_LOGIN,
+            "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT",
+        )
+        _ensure_role(
+            admin,
+            DENIED_LOGIN,
+            "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT",
+        )
+        with isolated_postgres_engine(url, runtime_login=RUNTIME_LOGIN) as engine:
+            with engine.connect() as connection:
+                with pytest.raises(PersistenceError, match=RUNTIME_SESSION_MISMATCH):
+                    verify_runtime_session(connection, RUNTIME_LOGIN)
+                assert connection.scalar(text("SELECT session_user")) != RUNTIME_LOGIN
+            with _dispose_after(
+                create_database_engine(
+                    _role_url(url, RUNTIME_LOGIN),
+                    connect_args={"connect_timeout": 5},
+                )
+            ) as runtime_engine:
+                with runtime_engine.connect() as connection:
+                    verify_runtime_session(connection, RUNTIME_LOGIN)
+                    assert connection.scalar(text("SELECT session_user")) == RUNTIME_LOGIN
+                    assert connection.scalar(text("SELECT current_user")) == RUNTIME_LOGIN
+                verify_configured_runtime_session(
+                    Settings(
+                        _env_file=None,
+                        database_url=_role_url(url, RUNTIME_LOGIN),
+                    )
+                )
+            with engine.connect() as connection:
+                session_user = connection.scalar(text("SELECT session_user"))
+                with pytest.raises(PersistenceError, match=RUNTIME_LOGIN_REFUSAL):
+                    verify_runtime_session(connection, str(session_user))
+            with _dispose_after(
+                create_database_engine(
+                    _role_url(url, DENIED_LOGIN),
+                    connect_args={"connect_timeout": 5},
+                )
+            ) as denied_engine:
+                with denied_engine.connect() as connection:
+                    with pytest.raises(
+                        PersistenceError, match=RUNTIME_SESSION_MEMBERSHIP
+                    ):
+                        verify_runtime_session(connection, DENIED_LOGIN)
+                    assert connection.scalar(text("SELECT current_user")) == DENIED_LOGIN
+    finally:
+        _drop_managed_role(admin, RUNTIME_LOGIN)
+        _drop_managed_role(admin, DENIED_LOGIN)
         admin.dispose()
 
 
