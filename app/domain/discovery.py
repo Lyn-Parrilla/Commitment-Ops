@@ -293,6 +293,7 @@ class LearningSignal(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: UUID = Field(default_factory=uuid4)
+    decision_id: UUID = Field(default_factory=uuid4)
     candidate_id: UUID | None
     source_document: SourceDocumentSnapshot
     source_location: SourceLocation | None

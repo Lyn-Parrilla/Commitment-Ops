@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.api.auth import JWTVerifier, get_jwt_verifier
 from app.api.dependencies import (
+    get_discovery_repository,
     get_organization_repository,
     get_workflow_repository,
 )
@@ -18,6 +19,7 @@ from app.config import get_settings
 from app.main import create_app
 from app.persistence import (
     Base,
+    DiscoveryRepository,
     Organization,
     OrganizationAdmin,
     OrganizationRepository,
@@ -140,6 +142,7 @@ def token_factory(jwt_private_key: Any):
 
 @pytest.fixture
 def api_client(
+    api_session_factory: SessionFactory,
     api_repositories: tuple[WorkflowRepository, OrganizationRepository],
     jwt_private_key: Any,
     token_factory,
@@ -160,6 +163,9 @@ def api_client(
     )
     application.dependency_overrides[get_organization_repository] = (
         lambda: organization_repository
+    )
+    application.dependency_overrides[get_discovery_repository] = (
+        lambda: DiscoveryRepository(api_session_factory)
     )
     application.dependency_overrides[get_jwt_verifier] = lambda: verifier
 

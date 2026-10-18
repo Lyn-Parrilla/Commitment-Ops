@@ -37,6 +37,7 @@ def test_approving_candidate_creates_authoritative_requirement(
     assert candidate.review_status == ReviewStatus.APPROVED
     assert candidate.is_authoritative is False
     assert approval.learning_signal.human_decision == HumanDecision.APPROVED
+    assert approval.learning_signal.decision_id != approval.learning_signal.id
     assert (
         approval.learning_signal.resulting_requirement.requirement_id
         == approval.requirement.id

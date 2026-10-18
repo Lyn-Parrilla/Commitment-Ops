@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.client_config import router as client_config_router
+from app.api.discovery import router as discovery_router
 from app.api.errors import register_error_handlers
 from app.api.health import router as health_router
 from app.api.organizations import router as organizations_router
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     application.include_router(client_config_router)
     application.include_router(organizations_router)
     application.include_router(workflows_router)
+    application.include_router(discovery_router)
     _install_web(application)
     return application
 

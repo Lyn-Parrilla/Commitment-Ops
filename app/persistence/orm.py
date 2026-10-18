@@ -13,15 +13,22 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    Float,
     Index,
     String,
     Text,
     TypeDecorator,
+    UniqueConstraint,
     Uuid,
     true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.domain.discovery import (
+    DiscoveryClassification,
+    HumanDecision,
+)
 from app.domain.enums import (
     EvidenceStatus,
     EvidenceType,
@@ -289,3 +296,152 @@ class AuditEventRecord(Base):
     after_state: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     actor_reference: Mapped[str | None] = mapped_column(String(255))
     correlation_id: Mapped[str | None] = mapped_column(String(255))
+
+
+class RequirementCandidateRecord(Base):
+    __tablename__ = "requirement_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            f"provenance IN ({_allowed_values(RequirementProvenance)})",
+            name="ck_requirement_candidates_provenance",
+        ),
+        CheckConstraint(
+            f"classification IN ({_allowed_values(DiscoveryClassification)})",
+            name="ck_requirement_candidates_classification",
+        ),
+        CheckConstraint(
+            f"review_status IN ({_allowed_values(ReviewStatus)})",
+            name="ck_requirement_candidates_review_status",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_requirement_candidates_id_organization_id",
+        ),
+        Index("ix_requirement_candidates_organization_id", "organization_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "organizations.id",
+            name="fk_requirement_candidates_organization_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    provenance: Mapped[str] = mapped_column(String(40), nullable=False)
+    classification: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(500))
+    description: Mapped[str | None] = mapped_column(Text)
+    due_date: Mapped[date | None] = mapped_column(Date)
+    target: Mapped[str | None] = mapped_column(String(500))
+    evidence_expectation: Mapped[str | None] = mapped_column(Text)
+    owner_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    supervisor_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    discovery_reason: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    source_document: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source_location: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    original_discovery: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    review_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    reviewed_by_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    review_note: Mapped[str | None] = mapped_column(Text)
+
+
+class CandidateReviewDecisionRecord(Base):
+    __tablename__ = "candidate_review_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            f"human_decision IN ({_allowed_values(HumanDecision)})",
+            name="ck_candidate_review_decisions_human_decision",
+        ),
+        ForeignKeyConstraint(
+            ["candidate_id", "organization_id"],
+            ["requirement_candidates.id", "requirement_candidates.organization_id"],
+            name="fk_candidate_review_decisions_candidate_organization",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_candidate_review_decisions_id_organization_id",
+        ),
+        Index(
+            "ix_candidate_review_decisions_organization_id",
+            "organization_id",
+        ),
+        Index("ix_candidate_review_decisions_candidate_id", "candidate_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "organizations.id",
+            name="fk_candidate_review_decisions_organization_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    candidate_id: Mapped[UUID | None] = mapped_column(Uuid)
+    human_decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    reviewer_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    reviewer_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class LearningSignalRecord(Base):
+    __tablename__ = "learning_signals"
+    __table_args__ = (
+        CheckConstraint(
+            "discovery_provenance IS NULL OR discovery_provenance IN "
+            f"({_allowed_values(RequirementProvenance)})",
+            name="ck_learning_signals_discovery_provenance",
+        ),
+        ForeignKeyConstraint(
+            ["decision_id", "organization_id"],
+            [
+                "candidate_review_decisions.id",
+                "candidate_review_decisions.organization_id",
+            ],
+            name="fk_learning_signals_decision_organization",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["candidate_id", "organization_id"],
+            [
+                "requirement_candidates.id",
+                "requirement_candidates.organization_id",
+            ],
+            name="fk_learning_signals_candidate_organization",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_learning_signals_organization_id", "organization_id"),
+        Index("ix_learning_signals_candidate_id", "candidate_id"),
+        UniqueConstraint("decision_id", name="uq_learning_signals_decision_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "organizations.id",
+            name="fk_learning_signals_organization_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    decision_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    candidate_id: Mapped[UUID | None] = mapped_column(Uuid)
+    source_document: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source_location: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    original_discovery: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    reviewed_candidate: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    discovery_provenance: Mapped[str | None] = mapped_column(String(40))
+    discovery_reason: Mapped[str | None] = mapped_column(Text)
+    original_confidence: Mapped[float | None] = mapped_column(Float)
+    resulting_requirement: Mapped[dict[str, Any] | None] = mapped_column(JSON)

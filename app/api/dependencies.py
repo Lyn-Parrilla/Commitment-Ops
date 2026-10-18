@@ -12,8 +12,10 @@ from app.api.auth import (
     get_authenticated_principal,
 )
 from app.application import WorkflowService
+from app.application.discovery import DiscoveryService
 from app.domain import Person
 from app.persistence import (
+    DiscoveryRepository,
     OrganizationRepository,
     SessionFactory,
     WorkflowRepository,
@@ -41,6 +43,15 @@ def _session_factory() -> SessionFactory:
 
 def get_workflow_repository() -> WorkflowRepository:
     return _workflow_repository()
+
+
+@lru_cache
+def _discovery_repository() -> DiscoveryRepository:
+    return DiscoveryRepository(_session_factory())
+
+
+def get_discovery_repository() -> DiscoveryRepository:
+    return _discovery_repository()
 
 
 def get_organization_repository() -> OrganizationRepository:
@@ -77,5 +88,38 @@ def get_workflow_service(
         organization_id=organization_id,
         user_id=principal.user_id,
         actor_reference=principal.actor_reference,
+        reviewer=reviewer,
+    )
+
+
+def get_discovery_service(
+    principal: Annotated[
+        AuthenticatedPrincipal,
+        Depends(get_authenticated_principal),
+    ],
+    organization_id: Annotated[UUID, Header(alias="X-Organization-ID")],
+    discovery_repository: Annotated[
+        DiscoveryRepository,
+        Depends(get_discovery_repository),
+    ],
+    organization_repository: Annotated[
+        OrganizationRepository,
+        Depends(get_organization_repository),
+    ],
+) -> DiscoveryService:
+    if not organization_repository.has_active_membership(
+        organization_id=organization_id,
+        user_id=principal.user_id,
+    ):
+        raise OrganizationAccessDeniedError
+
+    reviewer = Person.create(
+        name=principal.email,
+        email=principal.email,
+    ).model_copy(update={"id": principal.user_id})
+    return DiscoveryService(
+        discovery_repository,
+        organization_id=organization_id,
+        user_id=principal.user_id,
         reviewer=reviewer,
     )

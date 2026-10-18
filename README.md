@@ -299,8 +299,7 @@ logging or evidence of regulatory compliance.
 ## Learning loop 1 — document and requirement intelligence
 
 CommitmentOps treats source documents as evidence about potential commitments,
-not as organizational truth. Slice 2 implements this deterministic, in-memory
-flow:
+not as organizational truth. Discovery, review, and feedback follow this flow:
 
 ```text
 Grant document
@@ -348,13 +347,18 @@ The optional organization reference on source metadata keeps validated feedback
 groupable for future organization-specific terminology, formats, evidence
 patterns, and workflow conventions.
 
-Source documents, candidates, discovery snapshots, and learning signals remain
-in memory and are not durable across process restarts. Slice 3 persists only the
-authoritative accountability aggregate. The discovery slice captures feedback;
-it does not train a model or implement embeddings, vector databases,
-retrieval-augmented generation (RAG), fine-tuning, or autonomous retraining.
-Future learning must continue to use validated human outcomes rather than
-unreviewed AI output.
+A review decision and its learning signal are stored as separate rows. The
+decision records the authenticated reviewer and the server decision time with
+the candidate. The learning signal keeps the original discovery, the reviewed
+candidate, the resulting requirement characteristics, and the source document
+and source location. Those rows are inserted once; a later save that would
+change them is refused. Revising a rejected candidate returns it to pending
+review and leaves the earlier signal in place. Source documents remain
+traceable metadata, not uploaded files. Candidates stay non-authoritative.
+This loop does not train a model or implement embeddings, vector databases,
+retrieval-augmented generation (RAG), fine-tuning, autonomous retraining, or
+the personalized workflow intelligence loop. Future learning must continue to
+use validated human outcomes rather than unreviewed AI output.
 
 ## Learning loop 2 — personalized workflow intelligence (planned)
 

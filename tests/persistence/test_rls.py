@@ -596,7 +596,7 @@ def test_postgresql_downgrade_keeps_deferred_person_foreign_keys() -> None:
                 ),
                 {"id": person_id},
             )
-        assert version == "20261017_04"
+        assert version == "20261018_05"
         assert deferred is True
         assert policy == 1
     finally:

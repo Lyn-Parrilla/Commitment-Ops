@@ -14,14 +14,21 @@ from app.application import (
     RequirementTransition,
     WorkflowTransition,
 )
+from app.application.discovery import CandidateReviewAction
 from app.domain import (
+    DiscoveryClassification,
+    DocumentType,
     EvidenceStatus,
     EvidenceType,
+    HumanDecision,
+    LearningSignal,
     Person,
     Requirement,
+    RequirementCandidate,
     RequirementProvenance,
     RequirementStatus,
     ReviewStatus,
+    SourceLocation,
     Workflow,
     WorkflowStatus,
     WorkflowType,
@@ -164,6 +171,202 @@ class RequirementReviewRequest(APIModel):
         ):
             raise ValueError("resubmit accepts only the action field")
         return self
+
+
+class SourceLocationInput(APIModel):
+    page: int | None = Field(default=None, ge=1)
+    section: str | None = Field(default=None, max_length=500)
+    heading: str | None = Field(default=None, max_length=500)
+    paragraph: str | None = Field(default=None, max_length=500)
+    table: str | None = Field(default=None, max_length=500)
+    reference: str | None = Field(default=None, max_length=500)
+
+    def to_domain(self) -> SourceLocation:
+        return SourceLocation(
+            page=self.page,
+            section=self.section,
+            heading=self.heading,
+            paragraph=self.paragraph,
+            table=self.table,
+            reference=self.reference,
+        )
+
+
+class DiscoverCandidateRequest(APIModel):
+    title: str | None = Field(default=None, max_length=500)
+    description: str | None = None
+    due_date: date | None = None
+    target: str | None = Field(default=None, max_length=500)
+    owner: PersonInput | None = None
+    supervisor: PersonInput | None = None
+    evidence_expectation: str | None = None
+    provenance: RequirementProvenance
+    classification: DiscoveryClassification = DiscoveryClassification.REQUIREMENT
+    source_filename: str = Field(min_length=1, max_length=500)
+    source_document_type: DocumentType
+    source_reference: str = Field(min_length=1, max_length=1000)
+    source_location: SourceLocationInput | None = None
+    discovery_reason: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class CandidateRevisionRequest(APIModel):
+    title: str | None = Field(default=None, max_length=500)
+    description: str | None = None
+    due_date: date | None = None
+    target: str | None = Field(default=None, max_length=500)
+    owner: PersonInput | None = None
+    supervisor: PersonInput | None = None
+    evidence_expectation: str | None = None
+    classification: DiscoveryClassification | None = None
+
+
+class CandidateReviewBody(APIModel):
+    action: CandidateReviewAction
+    note: str | None = None
+    reason: str | None = None
+
+
+class HumanAddedFeedbackRequest(APIModel):
+    title: str = Field(min_length=1, max_length=500)
+    description: str = Field(min_length=1)
+    owner: PersonInput
+    supervisor: PersonInput | None = None
+    evidence_expectation: str = Field(min_length=1)
+    provenance: RequirementProvenance
+    due_date: date | None = None
+    target: str | None = Field(default=None, max_length=500)
+    source_filename: str = Field(min_length=1, max_length=500)
+    source_document_type: DocumentType
+    source_reference: str = Field(min_length=1, max_length=1000)
+    source_location: SourceLocationInput | None = None
+    reason: str | None = None
+
+
+class SourceLocationResponse(APIModel):
+    page: int | None
+    section: str | None
+    heading: str | None
+    paragraph: str | None
+    table: str | None
+    reference: str | None
+
+    @classmethod
+    def from_domain(cls, location: SourceLocation) -> SourceLocationResponse:
+        return cls(
+            page=location.page,
+            section=location.section,
+            heading=location.heading,
+            paragraph=location.paragraph,
+            table=location.table,
+            reference=location.reference,
+        )
+
+
+class LearningSignalResponse(APIModel):
+    id: UUID
+    decision_id: UUID
+    candidate_id: UUID | None
+    human_decision: HumanDecision
+    reviewer: PersonResponse
+    decision_reason: str | None
+    decided_at: datetime
+    source_document_id: UUID
+    source_filename: str
+    source_reference: str
+    source_location: SourceLocationResponse | None
+    original_title: str | None
+    reviewed_title: str | None
+    resulting_requirement_id: UUID | None
+    resulting_provenance: RequirementProvenance | None
+
+    @classmethod
+    def from_domain(cls, signal: LearningSignal) -> LearningSignalResponse:
+        original = signal.original_discovery
+        reviewed = signal.reviewed_candidate
+        result = signal.resulting_requirement
+        return cls(
+            id=signal.id,
+            decision_id=signal.decision_id,
+            candidate_id=signal.candidate_id,
+            human_decision=signal.human_decision,
+            reviewer=PersonResponse(
+                id=signal.reviewer.id,
+                name=signal.reviewer.name,
+                email=signal.reviewer.email,
+                role=signal.reviewer.role,
+            ),
+            decision_reason=signal.decision_reason,
+            decided_at=signal.decided_at,
+            source_document_id=signal.source_document.id,
+            source_filename=signal.source_document.filename,
+            source_reference=signal.source_document.source_reference,
+            source_location=(
+                None
+                if signal.source_location is None
+                else SourceLocationResponse.from_domain(signal.source_location)
+            ),
+            original_title=None if original is None else original.title,
+            reviewed_title=None if reviewed is None else reviewed.title,
+            resulting_requirement_id=None if result is None else result.requirement_id,
+            resulting_provenance=None if result is None else result.provenance,
+        )
+
+
+class CandidateResponse(APIModel):
+    id: UUID
+    is_authoritative: bool
+    provenance: RequirementProvenance
+    classification: DiscoveryClassification
+    title: str | None
+    description: str | None
+    review_status: ReviewStatus
+    reviewed_by: PersonResponse | None
+    reviewed_at: datetime | None
+    review_note: str | None
+    source_document_id: UUID
+    source_filename: str
+    source_reference: str
+    source_location: SourceLocationResponse | None
+    learning_signals: list[LearningSignalResponse]
+
+    @classmethod
+    def from_domain(cls, candidate: RequirementCandidate) -> CandidateResponse:
+        location = candidate.source_location
+        reviewer = candidate.reviewed_by
+        return cls(
+            id=candidate.id,
+            is_authoritative=candidate.is_authoritative,
+            provenance=candidate.provenance,
+            classification=candidate.classification,
+            title=candidate.title,
+            description=candidate.description,
+            review_status=candidate.review_status,
+            reviewed_by=(
+                None
+                if reviewer is None
+                else PersonResponse(
+                    id=reviewer.id,
+                    name=reviewer.name,
+                    email=reviewer.email,
+                    role=reviewer.role,
+                )
+            ),
+            reviewed_at=candidate.reviewed_at,
+            review_note=candidate.review_note,
+            source_document_id=candidate.source_document_snapshot.id,
+            source_filename=candidate.source_document_snapshot.filename,
+            source_reference=candidate.source_document_snapshot.source_reference,
+            source_location=(
+                None
+                if location is None
+                else SourceLocationResponse.from_domain(location)
+            ),
+            learning_signals=[
+                LearningSignalResponse.from_domain(signal)
+                for signal in candidate.learning_signals
+            ],
+        )
 
 
 class ValidationIssue(APIModel):

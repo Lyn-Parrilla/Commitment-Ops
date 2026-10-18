@@ -20,7 +20,20 @@ from app.persistence.rls import (
 )
 
 
-def test_settings_load_without_secrets() -> None:
+def test_settings_load_without_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "APP_NAME",
+        "ENVIRONMENT",
+        "DATABASE_URL",
+        "MIGRATION_DATABASE_URL",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "LLM_API_KEY",
+        "LLM_API_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
     settings = Settings(_env_file=None)
 
     assert settings.app_name == "CommitmentOps AI"
