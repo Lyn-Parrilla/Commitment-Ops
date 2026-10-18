@@ -351,7 +351,7 @@ def test_audit_events_are_append_only_snapshots_of_successful_saves(
     assert events[0].before_state is None
     assert events[0].after_state["status"] == WorkflowStatus.ACTIVE
     assert events[0].actor_reference == "synthetic-reviewer"
-    assert events[1].event_type == "workflow.updated"
+    assert events[1].event_type == "workflow.completed"
     assert events[1].before_state["status"] == WorkflowStatus.ACTIVE
     assert events[1].after_state["status"] == WorkflowStatus.COMPLETED
     assert events[1].correlation_id == "correlation-002"

@@ -362,8 +362,10 @@ use validated human outcomes rather than unreviewed AI output.
 
 ## Learning loop 2 — personalized workflow intelligence (planned)
 
-This loop is confirmed future architecture; it is not implemented in the
-current code.
+Factual workflow events are appended to the existing audit history when a
+workflow save changes audited state. An unchanged save appends nothing.
+Recommendations, model training, and automatic changes to reminders,
+assignments, or engagement strategy are not implemented.
 
 The planned workflow-intelligence loop will:
 

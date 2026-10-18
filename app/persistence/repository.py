@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -33,6 +33,7 @@ from app.persistence.orm import (
     RequirementRecord,
     WorkflowRecord,
 )
+from app.persistence.workflow_events import derive_workflow_audit_changes
 
 
 @dataclass(frozen=True)
@@ -240,20 +241,25 @@ class WorkflowRepository:
                     _audit_snapshot(_to_domain(existing)) if existing else None
                 )
                 self._save_aggregate(session, workflow, existing)
-                session.add(
-                    AuditEventRecord(
-                        occurred_at=datetime.now(UTC),
-                        entity_type="workflow",
-                        entity_id=workflow.id,
-                        event_type=(
-                            "workflow.updated" if existing else "workflow.created"
-                        ),
-                        before_state=before_state,
-                        after_state=_audit_snapshot(workflow),
-                        actor_reference=_clean_optional(actor_reference),
-                        correlation_id=_clean_optional(correlation_id),
+                occurred_at = datetime.now(UTC)
+                actor = _clean_optional(actor_reference)
+                correlation = _clean_optional(correlation_id)
+                after_state = _audit_snapshot(workflow)
+                for index, change in enumerate(
+                    derive_workflow_audit_changes(before_state, after_state)
+                ):
+                    session.add(
+                        AuditEventRecord(
+                            occurred_at=occurred_at + timedelta(microseconds=index),
+                            entity_type="workflow",
+                            entity_id=workflow.id,
+                            event_type=change.event_type,
+                            before_state=change.before_state,
+                            after_state=change.after_state,
+                            actor_reference=actor,
+                            correlation_id=correlation,
+                        )
                     )
-                )
         except PersistenceError:
             raise
         except SQLAlchemyError as exc:
