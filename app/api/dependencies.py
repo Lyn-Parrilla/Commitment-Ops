@@ -75,6 +75,7 @@ def get_workflow_service(
     return WorkflowService(
         workflow_repository,
         organization_id=organization_id,
+        user_id=principal.user_id,
         actor_reference=principal.actor_reference,
         reviewer=reviewer,
     )

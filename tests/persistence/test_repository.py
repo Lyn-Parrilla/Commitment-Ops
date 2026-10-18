@@ -1,3 +1,4 @@
+import inspect
 from datetime import date
 from uuid import UUID
 
@@ -20,14 +21,24 @@ from app.persistence import (
     Base,
     InvalidAssociationError,
     Organization,
+    OrganizationAdmin,
     OrganizationRepository,
     PersistenceError,
     WorkflowRepository,
     create_database_engine,
     create_session_factory,
 )
+from app.persistence.rls import tenant_session
 
 TEST_ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
+
+
+def test_runtime_transactions_cannot_disable_tenant_enforcement() -> None:
+    assert "enforce" not in inspect.signature(tenant_session).parameters
+    assert not hasattr(OrganizationRepository, "save")
+    assert not hasattr(OrganizationRepository, "set_membership")
+    with pytest.raises(TypeError):
+        tenant_session(None, write=True, enforce=False)  # type: ignore[call-arg]
 
 
 def test_persist_and_reload_complete_workflow_after_new_repository_instance(
@@ -37,7 +48,7 @@ def test_persist_and_reload_complete_workflow_after_new_repository_instance(
     first_engine = create_database_engine(database_url)
     Base.metadata.create_all(first_engine)
     first_session_factory = create_session_factory(first_engine)
-    OrganizationRepository(first_session_factory).save(
+    OrganizationAdmin(first_session_factory).save(
         Organization(
             id=TEST_ORGANIZATION_ID,
             name="Synthetic Test Organization",

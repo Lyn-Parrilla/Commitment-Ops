@@ -22,6 +22,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.pool import NullPool
 
 from app.persistence.database import (
+    RUNTIME_LOGIN_ATTRIBUTE,
     Base,
     create_database_engine,
     normalize_database_url,
@@ -161,16 +162,32 @@ def require_test_target(engine: Engine) -> IsolatedPostgresTarget:
     return target
 
 
-def alembic_config(target: IsolatedPostgresTarget) -> Config:
+def alembic_config(
+    target: IsolatedPostgresTarget,
+    *,
+    runtime_login: str | None = None,
+) -> Config:
     config = Config("alembic.ini")
     pinned = pin_test_search_path(target.url, target.schema)
     config.set_main_option("sqlalchemy.url", pinned.replace("%", "%%"))
     config.attributes["commitmentops_test_schema"] = target.schema
+    if runtime_login is not None:
+        if (
+            not runtime_login
+            or runtime_login[0].isdigit()
+            or not runtime_login.replace("_", "").isalnum()
+        ):
+            raise UnsafeTestDatabase("refusing an unexpected runtime login")
+        config.attributes[RUNTIME_LOGIN_ATTRIBUTE] = runtime_login
     return config
 
 
 @contextmanager
-def isolated_postgres_engine(url: str) -> Iterator[Engine]:
+def isolated_postgres_engine(
+    url: str,
+    *,
+    runtime_login: str | None = None,
+) -> Iterator[Engine]:
     """Create, migrate, and drop one new schema for a single test module."""
 
     normalized = assert_postgres_test_url(url)
@@ -207,8 +224,8 @@ def isolated_postgres_engine(url: str) -> Iterator[Engine]:
         )
         target = IsolatedPostgresTarget(normalized, schema)
         bind_test_target(engine, target)
-        command.upgrade(alembic_config(target), "head")
-        command.check(alembic_config(target))
+        command.upgrade(alembic_config(target, runtime_login=runtime_login), "head")
+        command.check(alembic_config(target, runtime_login=runtime_login))
         _assert_migrated(engine, schema)
         if engine is None:
             raise UnsafeTestDatabase("PostgreSQL test engine was not created")
@@ -367,7 +384,7 @@ def _assert_migrated(engine: Engine, schema: str) -> None:
                 "PostgreSQL connection is not using the isolated test schema"
             )
         version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        if version != "20261016_03":
+        if version != "20261017_04":
             raise UnsafeTestDatabase(
                 "isolated schema did not migrate to the expected Alembic head"
             )

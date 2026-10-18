@@ -17,7 +17,7 @@ from app.domain import (
 from app.persistence import (
     Base,
     Organization,
-    OrganizationRepository,
+    OrganizationAdmin,
     WorkflowRepository,
     create_database_engine,
     create_session_factory,
@@ -36,7 +36,7 @@ def repository(database_url: str) -> Iterator[WorkflowRepository]:
     engine = create_database_engine(database_url)
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
-    OrganizationRepository(session_factory).save(
+    OrganizationAdmin(session_factory).save(
         Organization(
             id=TEST_ORGANIZATION_ID,
             name="Synthetic Test Organization",

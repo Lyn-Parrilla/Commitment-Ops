@@ -16,6 +16,7 @@ from app.persistence.exceptions import (
 from app.persistence.repository import (
     AuditEvent,
     Organization,
+    OrganizationAdmin,
     OrganizationRepository,
     WorkflowRepository,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "DatabaseConfigurationError",
     "InvalidAssociationError",
     "Organization",
+    "OrganizationAdmin",
     "OrganizationRepository",
     "PersistenceError",
     "SessionFactory",

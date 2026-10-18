@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     database_url: SecretStr | None = None
+    migration_database_url: SecretStr | None = None
 
     auth_issuer: str | None = None
     auth_audience: str | None = None

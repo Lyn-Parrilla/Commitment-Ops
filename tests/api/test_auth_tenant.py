@@ -27,7 +27,11 @@ from app.api.dependencies import (
 )
 from app.config import get_settings
 from app.main import create_app
-from app.persistence import OrganizationRepository, WorkflowRepository
+from app.persistence import (
+    OrganizationAdmin,
+    OrganizationRepository,
+    WorkflowRepository,
+)
 
 USER_ID = UUID("20000000-0000-0000-0000-000000000001")
 OTHER_USER_ID = UUID("20000000-0000-0000-0000-000000000002")
@@ -121,11 +125,10 @@ def test_missing_authentication_configuration_fails_closed_without_details(
 
 def test_inactive_or_missing_membership_is_denied(
     api_client: TestClient,
-    api_repositories: tuple[WorkflowRepository, OrganizationRepository],
+    organization_admin: OrganizationAdmin,
     token_factory,
 ) -> None:
-    _, organizations = api_repositories
-    organizations.set_membership(
+    organization_admin.set_membership(
         organization_id=ORGANIZATION_ID,
         user_id=USER_ID,
         is_active=False,

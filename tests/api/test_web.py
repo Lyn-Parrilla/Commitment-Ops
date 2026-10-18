@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.main import create_app
-from app.persistence import Organization, OrganizationRepository, WorkflowRepository
+from app.persistence import Organization, OrganizationAdmin
 
 TEST_USER_ID = UUID("20000000-0000-0000-0000-000000000001")
 TEST_ORGANIZATION_ID = UUID("30000000-0000-0000-0000-000000000001")
@@ -81,10 +81,9 @@ def test_invalid_client_config_is_omitted(monkeypatch) -> None:
 
 def test_organization_branding_is_membership_scoped_and_safe(
     api_client: TestClient,
-    api_repositories: tuple[WorkflowRepository, OrganizationRepository],
+    organization_admin: OrganizationAdmin,
 ) -> None:
-    _, organizations = api_repositories
-    organizations.save(
+    organization_admin.save(
         Organization(
             id=TEST_ORGANIZATION_ID,
             name="Synthetic Organization",
@@ -133,10 +132,9 @@ def test_missing_branding_uses_safe_defaults(
 
 def test_inactive_membership_is_not_returned(
     api_client: TestClient,
-    api_repositories: tuple[WorkflowRepository, OrganizationRepository],
+    organization_admin: OrganizationAdmin,
 ) -> None:
-    _, organizations = api_repositories
-    organizations.set_membership(
+    organization_admin.set_membership(
         organization_id=TEST_ORGANIZATION_ID,
         user_id=TEST_USER_ID,
         is_active=False,

@@ -85,16 +85,22 @@ def upgrade() -> None:
             ["owner_id"],
             ["people.id"],
             ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
         ),
         sa.ForeignKeyConstraint(
             ["reviewed_by_id"],
             ["people.id"],
             ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
         ),
         sa.ForeignKeyConstraint(
             ["supervisor_id"],
             ["people.id"],
             ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
         ),
         sa.ForeignKeyConstraint(
             ["workflow_id"],
@@ -145,6 +151,8 @@ def upgrade() -> None:
             ["submitted_by_id"],
             ["people.id"],
             ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
         ),
         sa.PrimaryKeyConstraint("id"),
     )

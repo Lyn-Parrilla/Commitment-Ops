@@ -23,6 +23,7 @@ from app.domain.enums import (
 from app.domain.models import Evidence, Person, Requirement, Workflow
 from app.persistence.database import SessionFactory, raise_persistence_failure
 from app.persistence.exceptions import InvalidAssociationError, PersistenceError
+from app.persistence.rls import privileged_session, tenant_session
 from app.persistence.orm import (
     AuditEventRecord,
     EvidenceRecord,
@@ -59,47 +60,10 @@ class Organization:
 
 
 class OrganizationRepository:
-    """Persist organizations and resolve active user memberships."""
+    """Resolve active memberships through the tenant-enforced connection."""
 
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
-
-    def save(self, organization: Organization) -> None:
-        try:
-            with self._session_factory.begin() as session:
-                record = session.get(OrganizationRecord, organization.id)
-                if record is None:
-                    session.add(_organization_record(organization))
-                else:
-                    _apply_organization(record, organization)
-        except SQLAlchemyError as exc:
-            raise_persistence_failure("organization persistence failed", exc)
-
-    def set_membership(
-        self,
-        *,
-        organization_id: UUID,
-        user_id: UUID,
-        is_active: bool,
-    ) -> None:
-        try:
-            with self._session_factory.begin() as session:
-                record = session.get(
-                    OrganizationMembershipRecord,
-                    (organization_id, user_id),
-                )
-                if record is None:
-                    session.add(
-                        OrganizationMembershipRecord(
-                            organization_id=organization_id,
-                            user_id=user_id,
-                            is_active=is_active,
-                        )
-                    )
-                else:
-                    record.is_active = is_active
-        except SQLAlchemyError as exc:
-            raise_persistence_failure("membership persistence failed", exc)
 
     def has_active_membership(
         self,
@@ -108,7 +72,12 @@ class OrganizationRepository:
         user_id: UUID,
     ) -> bool:
         try:
-            with self._session_factory() as session:
+            with tenant_session(
+                self._session_factory,
+                write=False,
+                user_id=user_id,
+                organization_id=organization_id,
+            ) as session:
                 return (
                     session.scalar(
                         select(OrganizationMembershipRecord).where(
@@ -127,7 +96,11 @@ class OrganizationRepository:
         """Return organizations where this user has an active membership."""
 
         try:
-            with self._session_factory() as session:
+            with tenant_session(
+                self._session_factory,
+                write=False,
+                user_id=user_id,
+            ) as session:
                 records = session.scalars(
                     select(OrganizationRecord)
                     .join(
@@ -144,6 +117,58 @@ class OrganizationRepository:
                 return [_to_organization(record) for record in records]
         except SQLAlchemyError as exc:
             raise_persistence_failure("organization lookup failed", exc)
+
+
+class OrganizationAdmin:
+    """Bootstrap organizations on a superuser or BYPASSRLS connection.
+
+    Request handlers receive ``OrganizationRepository`` and cannot construct
+    this path from the runtime login.
+    """
+
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    def save(self, organization: Organization) -> None:
+        try:
+            with privileged_session(self._session_factory) as session:
+                record = session.get(OrganizationRecord, organization.id)
+                if record is None:
+                    session.add(_organization_record(organization))
+                else:
+                    _apply_organization(record, organization)
+        except PersistenceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise_persistence_failure("organization persistence failed", exc)
+
+    def set_membership(
+        self,
+        *,
+        organization_id: UUID,
+        user_id: UUID,
+        is_active: bool,
+    ) -> None:
+        try:
+            with privileged_session(self._session_factory) as session:
+                record = session.get(
+                    OrganizationMembershipRecord,
+                    (organization_id, user_id),
+                )
+                if record is None:
+                    session.add(
+                        OrganizationMembershipRecord(
+                            organization_id=organization_id,
+                            user_id=user_id,
+                            is_active=is_active,
+                        )
+                    )
+                else:
+                    record.is_active = is_active
+        except PersistenceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise_persistence_failure("membership persistence failed", exc)
 
 
 def _organization_record(organization: Organization) -> OrganizationRecord:
@@ -186,6 +211,8 @@ class WorkflowRepository:
         self,
         workflow: Workflow,
         *,
+        user_id: UUID | None = None,
+        organization_id: UUID | None = None,
         actor_reference: str | None = None,
         correlation_id: str | None = None,
     ) -> None:
@@ -193,9 +220,21 @@ class WorkflowRepository:
             raise InvalidAssociationError(
                 "workflow must belong to an organization"
             )
+        if (
+            organization_id is not None
+            and workflow.organization_id != organization_id
+        ):
+            raise InvalidAssociationError(
+                "workflow cannot move between organizations"
+            )
         self._validate_aggregate(workflow)
         try:
-            with self._session_factory.begin() as session:
+            with tenant_session(
+                self._session_factory,
+                write=True,
+                user_id=user_id,
+                organization_id=organization_id or workflow.organization_id,
+            ) as session:
                 existing = session.get(WorkflowRecord, workflow.id)
                 before_state = (
                     _audit_snapshot(_to_domain(existing)) if existing else None
@@ -225,9 +264,15 @@ class WorkflowRepository:
         workflow_id: UUID,
         *,
         organization_id: UUID,
+        user_id: UUID | None = None,
     ) -> Workflow | None:
         try:
-            with self._session_factory() as session:
+            with tenant_session(
+                self._session_factory,
+                write=False,
+                user_id=user_id,
+                organization_id=organization_id,
+            ) as session:
                 record = session.scalar(
                     _workflow_select().where(
                         WorkflowRecord.id == workflow_id,
@@ -242,6 +287,7 @@ class WorkflowRepository:
         self,
         *,
         organization_id: UUID,
+        user_id: UUID | None = None,
         status: WorkflowStatus | None = None,
         workflow_type: WorkflowType | None = None,
     ) -> list[Workflow]:
@@ -256,7 +302,12 @@ class WorkflowRepository:
             )
         statement = statement.order_by(WorkflowRecord.name, WorkflowRecord.id)
         try:
-            with self._session_factory() as session:
+            with tenant_session(
+                self._session_factory,
+                write=False,
+                user_id=user_id,
+                organization_id=organization_id,
+            ) as session:
                 return [
                     _to_domain(record)
                     for record in session.scalars(statement).unique().all()
@@ -269,6 +320,7 @@ class WorkflowRepository:
         workflow_id: UUID,
         *,
         organization_id: UUID,
+        user_id: UUID | None = None,
     ) -> list[AuditEvent]:
         statement = (
             select(AuditEventRecord)
@@ -284,7 +336,12 @@ class WorkflowRepository:
             .order_by(AuditEventRecord.occurred_at, AuditEventRecord.id)
         )
         try:
-            with self._session_factory() as session:
+            with tenant_session(
+                self._session_factory,
+                write=False,
+                user_id=user_id,
+                organization_id=organization_id,
+            ) as session:
                 return [
                     AuditEvent(
                         id=record.id,
@@ -308,26 +365,10 @@ class WorkflowRepository:
         workflow: Workflow,
         existing: WorkflowRecord | None,
     ) -> None:
-        people = _collect_people(workflow)
-        for person in people.values():
-            record = session.get(PersonRecord, person.id)
-            if record is None:
-                session.add(
-                    PersonRecord(
-                        id=person.id,
-                        name=person.name,
-                        email=person.email,
-                        role=person.role,
-                    )
-                )
-            elif (
-                record.name != person.name
-                or record.email != person.email
-                or record.role != person.role
-            ):
-                raise InvalidAssociationError(
-                    f"person {person.id} conflicts with persisted identity data"
-                )
+        pending_people = _pending_people(session, workflow)
+        defer_people = session.get_bind().dialect.name == "postgresql"
+        if not defer_people:
+            _insert_people(session, pending_people)
 
         if existing is None:
             existing = WorkflowRecord(
@@ -376,6 +417,9 @@ class WorkflowRepository:
                 session.add(record)
             _copy_requirement(requirement, record)
             self._save_evidence(session, requirement, record)
+        if defer_people:
+            session.flush()
+            _insert_people(session, pending_people)
 
     def _save_evidence(
         self,
@@ -479,6 +523,35 @@ def _records_by_id(
         select(record_type).where(record_type.id.in_(identifiers))
     ).all()
     return {record.id: record for record in records}
+
+
+def _pending_people(session: Session, workflow: Workflow) -> list[Person]:
+    pending: list[Person] = []
+    for person in _collect_people(workflow).values():
+        record = session.get(PersonRecord, person.id)
+        if record is None:
+            pending.append(person)
+        elif (
+            record.name != person.name
+            or record.email != person.email
+            or record.role != person.role
+        ):
+            raise InvalidAssociationError(
+                f"person {person.id} conflicts with persisted identity data"
+            )
+    return pending
+
+
+def _insert_people(session: Session, people: list[Person]) -> None:
+    for person in people:
+        session.add(
+            PersonRecord(
+                id=person.id,
+                name=person.name,
+                email=person.email,
+                role=person.role,
+            )
+        )
 
 
 def _collect_people(workflow: Workflow) -> dict[UUID, Person]:

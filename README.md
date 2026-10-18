@@ -141,12 +141,21 @@ reassigning them.
 
 A workflow and all related people, requirements, evidence, and its audit event
 are committed in one transaction. A failed record or audit insert rolls back
-the entire save. Persisted identifiers and review state are reconstructed
+the entire save. On PostgreSQL a person insert is accepted only when that same
+transaction already references the person from a requirement or evidence row
+the caller can write. People stay shared records and are not assigned to an
+organization. An SQLite file created with the earlier form of revision
+`20261009_01` keeps immediate person foreign keys and may need to be
+recreated. Fresh SQLite databases and PostgreSQL databases upgraded to head
+are unaffected. Persisted identifiers and review state are reconstructed
 without promoting pending AI-inferred requirements.
 
 PostgreSQL is the production target and is compatible with Supabase PostgreSQL.
 The standard suite uses isolated SQLite files. Alembic uses an explicit URL
-when the migration config already has one, and otherwise uses `DATABASE_URL`.
+when the migration config already has one. Otherwise it uses
+`MIGRATION_DATABASE_URL`, or `DATABASE_URL` when the migration URL is empty.
+On PostgreSQL that opened login must be a superuser or have `CREATEROLE`.
+An underprivileged runtime login is refused before any schema change.
 Application startup does not connect or apply migrations.
 
 ### PostgreSQL integration tests
@@ -199,9 +208,12 @@ or in the host environment. Set `TEST_DATABASE_URL` separately, with no real
 value in `.env.example`.
 
 Do not publicly deploy this application with real or sensitive data until the
-remaining security and operational gaps are addressed. Those include row-level
-security, membership administration, token revocation, and production
-provisioning.
+remaining security and operational gaps are addressed. Those include membership
+administration, token revocation, and production provisioning. PostgreSQL
+row-level security is enforced for every application transaction. Organization
+and membership bootstrap stays on a superuser or `BYPASSRLS` connection.
+Request handlers cannot turn enforcement off. Live Supabase role provisioning
+has not been validated.
 
 Set `DATABASE_URL` only through local or deployment environment configuration.
 Conventional `postgresql://` provider URLs are normalized to the psycopg 3
@@ -239,14 +251,21 @@ docker run --rm -p 8000:8000 \
   commitmentops
 ```
 
-Export `DATABASE_URL` before running the migration command. The command
-deliberately receives that existing environment value without placing a
-connection string in source or shell history. The image's default command starts
-only uvicorn; it does not apply migrations automatically.
+Export `DATABASE_URL` before running the migration command. When that login is
+not a superuser and does not have `CREATEROLE`, also export
+`MIGRATION_DATABASE_URL` for the privileged login and pass it to the migration
+container. The command deliberately receives those existing environment values
+without placing a connection string in source or shell history. The image's
+default command starts only uvicorn; it does not apply migrations automatically.
 
-Railway should supply `DATABASE_URL` through service variables. Alembic uses
-that same value; no connection string or credential belongs in Git. Production
-schema changes must use migrations rather than runtime table creation.
+Railway should supply `DATABASE_URL` through service variables. Supply
+`MIGRATION_DATABASE_URL` as well when the runtime login must stay restricted.
+No connection string or credential belongs in Git. Production schema changes
+must use migrations rather than runtime table creation. The migration grants
+the runtime login membership in `commitmentops_app` only. It does not grant
+superuser, row-level-security bypass, schema ownership, or migration rights,
+and it refuses an existing `commitmentops_app` role that is not already
+`NOLOGIN`, `NOSUPERUSER`, `NOBYPASSRLS`, `NOCREATEDB`, and `NOCREATEROLE`.
 
 The legacy placeholder is identified by the UUID
 `00000000-0000-0000-0000-000000000001`, not by its name. The upgrade inserts
@@ -537,15 +556,26 @@ audit foundation for the isolation rules.
 ## Configuration
 
 Application startup itself does not connect to the database or JWKS endpoint.
-`DATABASE_URL` is required for migrations and persistence operations.
-Authentication configuration is required when serving protected API requests.
+`DATABASE_URL` is required for application persistence. Alembic uses
+`MIGRATION_DATABASE_URL` when it is set. When it is empty, Alembic opens
+`DATABASE_URL` and, on PostgreSQL, continues only if that login is a superuser
+or has `CREATEROLE`. Application transactions on PostgreSQL run as
+`commitmentops_app` with transaction-local user and organization settings.
+Before that switch, the connected runtime login is refused when it is a
+superuser, has `BYPASSRLS`, or can assume a superuser, RLS-bypass,
+`CREATEROLE`, `CREATEDB`, or schema/table-owner role, including through
+indirect membership and including when that login is also the migration login.
+Missing context returns no rows. A separate restricted runtime login can be
+granted membership in `commitmentops_app` only. Authentication configuration is
+required when serving protected API requests.
 
 | Variable | Purpose |
 | --- | --- |
 | `ENVIRONMENT` | `development`, `test`, or `production` |
 | `LOG_LEVEL` | Process log level |
 | `PORT` | HTTP port (Railway sets this; local default is 8000) |
-| `DATABASE_URL` | PostgreSQL connection URL for persistence and Alembic |
+| `DATABASE_URL` | Runtime PostgreSQL URL. The login is refused when it is privileged, even if it is also the migration login |
+| `MIGRATION_DATABASE_URL` | Privileged Alembic URL (superuser or `CREATEROLE`). Empty reuses `DATABASE_URL`, which PostgreSQL rejects when that login cannot administer roles |
 | `TEST_DATABASE_URL` | Optional PostgreSQL URL used only by integration tests |
 | `AUTH_ISSUER` | Exact trusted JWT issuer |
 | `AUTH_AUDIENCE` | Required JWT audience, normally `authenticated` for Supabase |
@@ -561,9 +591,10 @@ Authentication configuration is required when serving protected API requests.
 Railway can build from the `Dockerfile`. The image includes `app/web` and
 serves it from the same origin as the API. The container starts uvicorn on
 `$PORT` and expects `/health` as the liveness path. Supply `DATABASE_URL`,
-the three `AUTH_*` values, `SUPABASE_URL`, and `SUPABASE_ANON_KEY` through
-Railway service variables, not Git. Do not put `SUPABASE_SERVICE_ROLE_KEY` in
-frontend configuration.
+`MIGRATION_DATABASE_URL` for the privileged migration login, the three `AUTH_*`
+values, `SUPABASE_URL`, and `SUPABASE_ANON_KEY` through Railway service
+variables, not Git. Do not put `SUPABASE_SERVICE_ROLE_KEY` in frontend
+configuration.
 
 Before serving the new interface, from a machine that can reach the production
 database:
@@ -594,7 +625,7 @@ Do not publicly deploy this application with real or sensitive data until the
 remaining security and operational gaps are addressed.
 
 Role-based or administrative authorization, membership-management endpoints,
-a theme editor, embedding or custom domains, database row-level security,
+a theme editor, embedding or custom domains, live Supabase role provisioning,
 production Supabase provisioning, persistence for discovery/learning objects,
 grant parsing, document extraction, CSV ingestion, LLM client code, embeddings,
 recognition engines, RAG, model training/retraining, scheduled reports, email

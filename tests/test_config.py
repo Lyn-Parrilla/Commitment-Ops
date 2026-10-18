@@ -1,4 +1,5 @@
 from pydantic import SecretStr
+from sqlalchemy.engine import make_url
 
 import pytest
 
@@ -8,6 +9,11 @@ from app.persistence import (
     configured_database_url,
     normalize_database_url,
 )
+from app.persistence.database import (
+    configured_migration_database_url,
+    migration_login_is_privileged,
+    runtime_database_login,
+)
 
 
 def test_settings_load_without_secrets() -> None:
@@ -16,6 +22,7 @@ def test_settings_load_without_secrets() -> None:
     assert settings.app_name == "CommitmentOps AI"
     assert settings.environment == "development"
     assert settings.database_url is None
+    assert settings.migration_database_url is None
     assert settings.supabase_url is None
     assert settings.supabase_anon_key is None
     assert settings.supabase_service_role_key is None
@@ -57,6 +64,58 @@ def test_conventional_postgresql_url_uses_psycopg_driver() -> None:
     assert normalize_database_url(
         "postgresql://db.example.test/commitmentops"
     ) == "postgresql+psycopg://db.example.test/commitmentops"
+
+
+def test_migration_url_prefers_the_migration_login() -> None:
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql://app_login:not-a-secret@db.example/commitmentops",
+        migration_database_url=(
+            "postgresql://migrator:not-a-secret@db.example/commitmentops"
+        ),
+    )
+
+    migration = make_url(configured_migration_database_url(settings))
+    assert migration.username == "migrator"
+    assert runtime_database_login(settings) == "app_login"
+
+
+def test_sqlite_migration_url_falls_back_to_the_application_url() -> None:
+    settings = Settings(
+        _env_file=None,
+        database_url="sqlite+pysqlite:///commitmentops-test.db",
+    )
+
+    assert (
+        configured_migration_database_url(settings)
+        == "sqlite+pysqlite:///commitmentops-test.db"
+    )
+    assert runtime_database_login(settings) is None
+
+
+def test_postgres_runtime_login_must_be_a_plain_role_name() -> None:
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql://bad-name@db.example/commitmentops",
+    )
+
+    with pytest.raises(DatabaseConfigurationError, match="plain role name"):
+        runtime_database_login(settings)
+
+
+def test_underprivileged_migration_login_is_rejected() -> None:
+    assert migration_login_is_privileged(
+        is_superuser=False,
+        can_create_role=False,
+    ) is False
+    assert migration_login_is_privileged(
+        is_superuser=True,
+        can_create_role=False,
+    ) is True
+    assert migration_login_is_privileged(
+        is_superuser=False,
+        can_create_role=True,
+    ) is True
 
 
 def test_get_settings_is_cached(monkeypatch) -> None:

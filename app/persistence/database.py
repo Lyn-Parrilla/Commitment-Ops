@@ -43,6 +43,8 @@ _DENIED_SCHEMAS = frozenset(
 _DATABASE_URL = re.compile(
     r"(?i)\b(?:[a-z][a-z0-9+.-]*)://[^\s'\"<>]+"
 )
+_ROLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+RUNTIME_LOGIN_ATTRIBUTE = "commitmentops_runtime_login"
 _CONNINFO_SECRET = re.compile(
     r"(?i)\b(password|pwd|user|username|host|hostname|dbname|database)"
     r"\s*=\s*(?:'[^']*'|\"[^\"]*\"|\S+)"
@@ -92,6 +94,55 @@ def create_session_factory(engine: Engine) -> SessionFactory:
     """Create sessions with domain-friendly post-commit object behavior."""
 
     return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def configured_migration_database_url(settings: Settings | None = None) -> str:
+    """Return the URL Alembic should open.
+
+    ``MIGRATION_DATABASE_URL`` wins. An empty migration URL falls back to
+    ``DATABASE_URL`` so SQLite tests and a local single-login database keep
+    working. On PostgreSQL that fallback is not permission to migrate:
+    ``migrations/env.py`` refuses the connection unless the login is a
+    superuser or has ``CREATEROLE``.
+    """
+
+    active = settings or get_settings()
+    migration = active.migration_database_url
+    if migration is not None and migration.get_secret_value().strip():
+        return normalize_database_url(migration.get_secret_value())
+    return configured_database_url(active)
+
+
+def runtime_database_login(settings: Settings | None = None) -> str | None:
+    """Return the PostgreSQL username from ``DATABASE_URL``.
+
+    SQLite and an unset URL have no login. A PostgreSQL URL with a missing
+    or unusual username fails closed instead of being granted a role.
+    """
+
+    active = settings or get_settings()
+    configured = active.database_url
+    if configured is None or not configured.get_secret_value().strip():
+        return None
+    parsed = make_url(normalize_database_url(configured.get_secret_value()))
+    if not parsed.drivername.startswith("postgresql"):
+        return None
+    username = parsed.username
+    if username is None or _ROLE_NAME.fullmatch(username) is None:
+        raise DatabaseConfigurationError(
+            "runtime database login is missing or not a plain role name"
+        )
+    return username
+
+
+def migration_login_is_privileged(
+    *,
+    is_superuser: bool,
+    can_create_role: bool,
+) -> bool:
+    """True when a migration login can create or administer cluster roles."""
+
+    return bool(is_superuser or can_create_role)
 
 
 def configured_database_url(settings: Settings | None = None) -> str:

@@ -141,18 +141,21 @@ def test_schema_inspection_does_not_hide_the_committed_revision(
     from sqlalchemy import create_engine
 
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'inspect.db'}")
-    with engine.connect() as connection:
-        connection.exec_driver_sql("SELECT 1")
-        assert connection.in_transaction()
-        open_context = MigrationContext.configure(connection=connection)
-        assert open_context._in_external_transaction is True
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql("SELECT 1")
+            assert connection.in_transaction()
+            open_context = MigrationContext.configure(connection=connection)
+            assert open_context._in_external_transaction is True
 
-    with engine.connect() as connection:
-        connection.exec_driver_sql("SELECT 1")
-        release_inspection_transaction(connection)
-        assert not connection.in_transaction()
-        released = MigrationContext.configure(connection=connection)
-        assert released._in_external_transaction is False
+        with engine.connect() as connection:
+            connection.exec_driver_sql("SELECT 1")
+            release_inspection_transaction(connection)
+            assert not connection.in_transaction()
+            released = MigrationContext.configure(connection=connection)
+            assert released._in_external_transaction is False
+    finally:
+        engine.dispose()
 
     source = (Path(__file__).parents[2] / "migrations" / "env.py").read_text()
     helper = source.split("def _require_isolated_search_path", 1)[1].split(
@@ -220,6 +223,8 @@ def test_postgresql_offline_migration_renders_without_application_url(
     assert "TIMESTAMP WITH TIME ZONE" in rendered
     assert "UUID" in rendered
     assert "DROP SCHEMA" not in rendered.upper()
+    assert "ALTER ROLE" not in rendered.upper()
+    assert "Refusing to use existing role commitmentops_app" in rendered
 
 
 def test_postgresql_model_ddl_uses_native_types() -> None:
@@ -511,10 +516,9 @@ def test_pinned_migration_url_and_errors_hide_credentials() -> None:
     assert schema in config.get_main_option("sqlalchemy.url")
     assert config.attributes["commitmentops_test_schema"] == schema
 
+    database_url = "postgresql://user:secret-token@db.example/postgres"
     with pytest.raises(RuntimeError, match="migration connection failed") as caught:
-        raise_redacted_migration_failure(
-            RuntimeError("postgresql://user:secret-token@db.example/postgres")
-        )
+        raise_redacted_migration_failure(RuntimeError(database_url))
     rendered = "".join(traceback.format_exception(caught.value))
     assert "secret-token" not in rendered
     assert "db.example" not in rendered

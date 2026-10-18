@@ -19,7 +19,9 @@ from app.main import create_app
 from app.persistence import (
     Base,
     Organization,
+    OrganizationAdmin,
     OrganizationRepository,
+    SessionFactory,
     WorkflowRepository,
     create_database_engine,
     create_session_factory,
@@ -49,33 +51,42 @@ class _StaticJWKClient:
 
 
 @pytest.fixture
-def api_repositories(
-    tmp_path: Path,
-) -> Iterator[tuple[WorkflowRepository, OrganizationRepository]]:
+def api_session_factory(tmp_path: Path) -> Iterator[SessionFactory]:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'api-test.db'}"
     engine = create_database_engine(database_url)
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
-    organization_repository = OrganizationRepository(session_factory)
+    yield session_factory
+    engine.dispose()
+
+
+@pytest.fixture
+def organization_admin(api_session_factory: SessionFactory) -> OrganizationAdmin:
+    return OrganizationAdmin(api_session_factory)
+
+
+@pytest.fixture
+def api_repositories(
+    api_session_factory: SessionFactory,
+    organization_admin: OrganizationAdmin,
+) -> tuple[WorkflowRepository, OrganizationRepository]:
+    organization_repository = OrganizationRepository(api_session_factory)
     for organization_id, name in (
         (TEST_ORGANIZATION_ID, "Synthetic Organization"),
         (TEST_OTHER_ORGANIZATION_ID, "Other Synthetic Organization"),
     ):
-        organization_repository.save(
-            Organization(id=organization_id, name=name)
-        )
-    organization_repository.set_membership(
+        organization_admin.save(Organization(id=organization_id, name=name))
+    organization_admin.set_membership(
         organization_id=TEST_ORGANIZATION_ID,
         user_id=TEST_USER_ID,
         is_active=True,
     )
-    organization_repository.set_membership(
+    organization_admin.set_membership(
         organization_id=TEST_OTHER_ORGANIZATION_ID,
         user_id=TEST_OTHER_USER_ID,
         is_active=True,
     )
-    yield WorkflowRepository(session_factory), organization_repository
-    engine.dispose()
+    return WorkflowRepository(api_session_factory), organization_repository
 
 
 @pytest.fixture

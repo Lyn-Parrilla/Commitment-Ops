@@ -1,7 +1,13 @@
 """Alembic environment.
 
-An explicit ``sqlalchemy.url`` already present on the config is used as given.
-``DATABASE_URL`` is consulted only when that value is empty. A
+An explicit ``sqlalchemy.url`` already present on the config is used as given
+and does not consult application settings. When that option is empty,
+``MIGRATION_DATABASE_URL`` is used, and ``DATABASE_URL`` is the fallback only
+when the migration URL is also empty. On PostgreSQL the opened login must be a
+superuser or have ``CREATEROLE``; an underprivileged runtime login is refused
+before schema changes. The runtime username is taken from ``DATABASE_URL`` and
+passed to the row-level security migration so it can receive membership in
+``commitmentops_app`` without receiving migration privileges. A
 ``commitmentops_test_schema`` config attribute, when present, pins the
 connection and Alembic version table to that isolated schema.
 """
@@ -13,14 +19,17 @@ from sqlalchemy import engine_from_config, pool
 
 from app.persistence import orm  # noqa: F401  # register metadata
 from app.persistence.database import (
+    RUNTIME_LOGIN_ATTRIBUTE,
     Base,
-    configured_database_url,
-    normalize_database_url,
+    configured_migration_database_url,
     isolated_schema_is_current,
+    migration_login_is_privileged,
+    normalize_database_url,
     quoted_isolated_schema,
     raise_redacted_migration_failure,
     release_inspection_transaction,
     resolve_migration_url,
+    runtime_database_login,
 )
 
 config = context.config
@@ -35,8 +44,13 @@ def _prepare_migration_target() -> str | None:
     if explicit_url is None:
         config.set_main_option(
             "sqlalchemy.url",
-            normalize_database_url(configured_database_url()).replace("%", "%%"),
+            normalize_database_url(configured_migration_database_url()).replace(
+                "%", "%%"
+            ),
         )
+        runtime_login = runtime_database_login()
+        if runtime_login is not None:
+            config.attributes[RUNTIME_LOGIN_ATTRIBUTE] = runtime_login
     schema = config.attributes.get("commitmentops_test_schema")
     if schema is None:
         return None
@@ -88,6 +102,30 @@ def _require_isolated_search_path(connection: object, quoted_schema: str) -> str
     return expected_schema
 
 
+def _require_privileged_migration_login(connection: object) -> None:
+    """Refuse a PostgreSQL migration connection that cannot administer roles."""
+
+    if connection.dialect.name != "postgresql":  # type: ignore[attr-defined]
+        return
+    row = connection.exec_driver_sql(  # type: ignore[attr-defined]
+        """
+        SELECT rolsuper, rolcreaterole
+        FROM pg_roles
+        WHERE rolname = current_user
+        """
+    ).one()
+    release_inspection_transaction(connection)
+    if not migration_login_is_privileged(
+        is_superuser=bool(row[0]),
+        can_create_role=bool(row[1]),
+    ):
+        raise RuntimeError(
+            "Refusing to migrate because this login cannot administer roles. "
+            "Set MIGRATION_DATABASE_URL to a superuser or CREATEROLE login. "
+            "An underprivileged runtime login is not used for schema changes."
+        )
+
+
 def run_migrations_online() -> None:
     quoted_schema = _prepare_migration_target()
     try:
@@ -112,6 +150,7 @@ def run_migrations_online() -> None:
             )
             configure_kwargs["version_table_schema"] = expected_schema
             configure_kwargs["include_name"] = _include_name
+        _require_privileged_migration_login(connection)
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

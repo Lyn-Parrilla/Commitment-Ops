@@ -61,11 +61,13 @@ class WorkflowService:
         repository: WorkflowRepository,
         *,
         organization_id: UUID,
+        user_id: UUID,
         actor_reference: str,
         reviewer: Person,
     ) -> None:
         self._repository = repository
         self._organization_id = organization_id
+        self._user_id = user_id
         self._actor_reference = actor_reference
         self._reviewer = reviewer
 
@@ -88,6 +90,7 @@ class WorkflowService:
     ) -> list[Workflow]:
         return self._repository.list(
             organization_id=self._organization_id,
+            user_id=self._user_id,
             status=status,
             workflow_type=workflow_type,
         )
@@ -96,6 +99,7 @@ class WorkflowService:
         workflow = self._repository.get(
             workflow_id,
             organization_id=self._organization_id,
+            user_id=self._user_id,
         )
         if workflow is None:
             raise WorkflowNotFoundError(workflow_id)
@@ -179,6 +183,8 @@ class WorkflowService:
     def _save(self, workflow: Workflow) -> None:
         self._repository.save(
             workflow,
+            user_id=self._user_id,
+            organization_id=self._organization_id,
             actor_reference=self._actor_reference,
         )
 

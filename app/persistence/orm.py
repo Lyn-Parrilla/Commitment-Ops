@@ -168,12 +168,22 @@ class RequirementRecord(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     owner_id: Mapped[UUID] = mapped_column(
         Uuid,
-        ForeignKey("people.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "people.id",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         nullable=False,
     )
     supervisor_id: Mapped[UUID | None] = mapped_column(
         Uuid,
-        ForeignKey("people.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "people.id",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
     )
     evidence_expectation: Mapped[str] = mapped_column(Text, nullable=False)
     provenance: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -183,7 +193,12 @@ class RequirementRecord(Base):
     review_status: Mapped[str] = mapped_column(String(30), nullable=False)
     reviewed_by_id: Mapped[UUID | None] = mapped_column(
         Uuid,
-        ForeignKey("people.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "people.id",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
     )
     reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     review_note: Mapped[str | None] = mapped_column(Text)
@@ -226,7 +241,12 @@ class EvidenceRecord(Base):
     evidence_type: Mapped[str] = mapped_column(String(30), nullable=False)
     submitted_by_id: Mapped[UUID] = mapped_column(
         Uuid,
-        ForeignKey("people.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "people.id",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         nullable=False,
     )
     submitted_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
