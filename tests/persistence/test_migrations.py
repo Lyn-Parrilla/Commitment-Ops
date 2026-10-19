@@ -555,6 +555,245 @@ def test_downgrade_removes_only_the_legacy_placeholder(
     assert "organization_memberships" not in tables
 
 
+def test_downgrade_to_prior_revision_preserves_workflow_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'assistance-downgrade.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    workflow_id = uuid4()
+    requirement_id = uuid4()
+    person_id = uuid4()
+    _insert_legacy_requirement(
+        database_url,
+        workflow_id=workflow_id,
+        requirement_id=requirement_id,
+        person_id=person_id,
+    )
+
+    command.downgrade(config, "20261018_05")
+
+    engine = create_database_engine(database_url)
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    workflow_constraints = {
+        item["name"] for item in inspector.get_unique_constraints("workflows")
+    }
+    stored_workflows = sa.table(
+        "workflows",
+        sa.column("id", sa.Uuid()),
+        sa.column("name", sa.String()),
+    )
+    stored_requirements = sa.table(
+        "requirements",
+        sa.column("id", sa.Uuid()),
+        sa.column("title", sa.String()),
+    )
+    with engine.connect() as connection:
+        name = connection.scalar(
+            sa.select(stored_workflows.c.name).where(
+                stored_workflows.c.id == workflow_id
+            )
+        )
+        title = connection.scalar(
+            sa.select(stored_requirements.c.title).where(
+                stored_requirements.c.id == requirement_id
+            )
+        )
+        version = connection.scalar(sa.text("SELECT version_num FROM alembic_version"))
+    engine.dispose()
+    get_settings.cache_clear()
+
+    assert version == "20261018_05"
+    assert name == "Legacy Synthetic Workflow"
+    assert title == "Synthetic requirement"
+    assert "assistance_proposals" not in tables
+    assert "assistance_proposal_events" not in tables
+    assert "uq_workflows_id_organization_id" not in workflow_constraints
+
+
+def test_downgrade_refuses_populated_assistance_tables(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'populated-assistance.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    workflow_id = uuid4()
+    requirement_id = uuid4()
+    person_id = uuid4()
+    proposal_id = uuid4()
+    _insert_legacy_requirement(
+        database_url,
+        workflow_id=workflow_id,
+        requirement_id=requirement_id,
+        person_id=person_id,
+    )
+    legacy_organization_id = UUID("00000000-0000-0000-0000-000000000001")
+    proposals = sa.table(
+        "assistance_proposals",
+        sa.column("id", sa.Uuid()),
+        sa.column("organization_id", sa.Uuid()),
+        sa.column("workflow_id", sa.Uuid()),
+        sa.column("requirement_id", sa.Uuid()),
+        sa.column("recommendation_type", sa.String()),
+        sa.column("rationale", sa.String()),
+        sa.column("intended_outcome", sa.String()),
+        sa.column("lifecycle_state", sa.String()),
+        sa.column("created_at", sa.DateTime()),
+    )
+    events = sa.table(
+        "assistance_proposal_events",
+        sa.column("id", sa.Uuid()),
+        sa.column("organization_id", sa.Uuid()),
+        sa.column("proposal_id", sa.Uuid()),
+        sa.column("event_type", sa.String()),
+        sa.column("actor_user_id", sa.Uuid()),
+        sa.column("occurred_at", sa.DateTime()),
+        sa.column("detail", sa.JSON()),
+    )
+    engine = create_database_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.insert(proposals).values(
+                id=proposal_id,
+                organization_id=legacy_organization_id,
+                workflow_id=workflow_id,
+                requirement_id=requirement_id,
+                recommendation_type="blocked_requirement",
+                rationale="Requirement is blocked.",
+                intended_outcome="The requirement is no longer blocked.",
+                lifecycle_state="proposed",
+                created_at=sa.func.current_timestamp(),
+            )
+        )
+        connection.execute(
+            sa.insert(events).values(
+                id=uuid4(),
+                organization_id=legacy_organization_id,
+                proposal_id=proposal_id,
+                event_type="proposed",
+                actor_user_id=person_id,
+                occurred_at=sa.func.current_timestamp(),
+                detail={},
+            )
+        )
+    engine.dispose()
+
+    with pytest.raises(
+        Exception,
+        match="Refusing to downgrade while assistance proposals",
+    ):
+        command.downgrade(config, "20261018_05")
+
+    engine = create_database_engine(database_url)
+    inspector = inspect(engine)
+    constraints = {
+        item["name"] for item in inspector.get_unique_constraints("workflows")
+    }
+    stored_proposals = sa.table(
+        "assistance_proposals",
+        sa.column("id", sa.Uuid()),
+        sa.column("lifecycle_state", sa.String()),
+    )
+    stored_events = sa.table(
+        "assistance_proposal_events",
+        sa.column("proposal_id", sa.Uuid()),
+    )
+    with engine.connect() as connection:
+        version = connection.scalar(sa.text("SELECT version_num FROM alembic_version"))
+        stored_state = connection.scalar(
+            sa.select(stored_proposals.c.lifecycle_state).where(
+                stored_proposals.c.id == proposal_id
+            )
+        )
+        event_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(stored_events)
+            .where(stored_events.c.proposal_id == proposal_id)
+        )
+    engine.dispose()
+    get_settings.cache_clear()
+
+    assert version == "20261018_06"
+    assert stored_state == "proposed"
+    assert event_count == 1
+    assert "uq_workflows_id_organization_id" in constraints
+
+
+def _insert_legacy_requirement(
+    database_url: str,
+    *,
+    workflow_id: UUID,
+    requirement_id: UUID,
+    person_id: UUID,
+) -> None:
+    legacy_organization_id = UUID("00000000-0000-0000-0000-000000000001")
+    workflows = sa.table(
+        "workflows",
+        sa.column("id", sa.Uuid()),
+        sa.column("organization_id", sa.Uuid()),
+        sa.column("name", sa.String()),
+        sa.column("workflow_type", sa.String()),
+        sa.column("status", sa.String()),
+    )
+    people = sa.table(
+        "people",
+        sa.column("id", sa.Uuid()),
+        sa.column("name", sa.String()),
+        sa.column("email", sa.String()),
+    )
+    requirements = sa.table(
+        "requirements",
+        sa.column("id", sa.Uuid()),
+        sa.column("workflow_id", sa.Uuid()),
+        sa.column("title", sa.String()),
+        sa.column("description", sa.String()),
+        sa.column("owner_id", sa.Uuid()),
+        sa.column("evidence_expectation", sa.String()),
+        sa.column("provenance", sa.String()),
+        sa.column("status", sa.String()),
+        sa.column("review_status", sa.String()),
+    )
+    engine = create_database_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.insert(workflows).values(
+                id=workflow_id,
+                organization_id=legacy_organization_id,
+                name="Legacy Synthetic Workflow",
+                workflow_type="general",
+                status="active",
+            )
+        )
+        connection.execute(
+            sa.insert(people).values(
+                id=person_id,
+                name="Synthetic Owner",
+                email="owner@example.org",
+            )
+        )
+        connection.execute(
+            sa.insert(requirements).values(
+                id=requirement_id,
+                workflow_id=workflow_id,
+                title="Synthetic requirement",
+                description="Synthetic",
+                owner_id=person_id,
+                evidence_expectation="A record",
+                provenance="user_provided",
+                status="blocked",
+                review_status="approved",
+            )
+        )
+    engine.dispose()
+
+
 def _dockerignore_excludes(pattern: str, required_path: str) -> bool:
     if pattern.startswith("!"):
         return False

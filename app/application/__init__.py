@@ -1,6 +1,7 @@
 """Application use cases between HTTP and the domain/persistence layers."""
 
 from app.application.exceptions import (
+    AssistanceProposalNotFoundError,
     CandidateNotFoundError,
     LearningSignalNotFoundError,
     RequirementNotFoundError,
@@ -17,6 +18,7 @@ from app.application.services import (
 
 __all__ = [
     "AddRequirementCommand",
+    "AssistanceProposalNotFoundError",
     "CandidateNotFoundError",
     "LearningSignalNotFoundError",
     "RequirementNotFoundError",

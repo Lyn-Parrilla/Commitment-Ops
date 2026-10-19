@@ -384,7 +384,7 @@ def _assert_migrated(engine: Engine, schema: str) -> None:
                 "PostgreSQL connection is not using the isolated test schema"
             )
         version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        if version != "20261018_05":
+        if version != "20261018_06":
             raise UnsafeTestDatabase(
                 "isolated schema did not migrate to the expected Alembic head"
             )

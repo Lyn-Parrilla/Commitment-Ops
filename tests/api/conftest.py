@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.api.auth import JWTVerifier, get_jwt_verifier
 from app.api.dependencies import (
+    get_assistance_repository,
     get_discovery_repository,
     get_organization_repository,
     get_workflow_repository,
@@ -18,6 +19,7 @@ from app.api.dependencies import (
 from app.config import get_settings
 from app.main import create_app
 from app.persistence import (
+    AssistanceRepository,
     Base,
     DiscoveryRepository,
     Organization,
@@ -166,6 +168,9 @@ def api_client(
     )
     application.dependency_overrides[get_discovery_repository] = (
         lambda: DiscoveryRepository(api_session_factory)
+    )
+    application.dependency_overrides[get_assistance_repository] = (
+        lambda: AssistanceRepository(api_session_factory)
     )
     application.dependency_overrides[get_jwt_verifier] = lambda: verifier
 

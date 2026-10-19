@@ -21,10 +21,16 @@ from sqlalchemy import (
     TypeDecorator,
     UniqueConstraint,
     Uuid,
+    text,
     true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.domain.assistance import (
+    ProposalEventType,
+    ProposalState,
+    RecommendationType,
+)
 from app.domain.discovery import (
     DiscoveryClassification,
     HumanDecision,
@@ -127,6 +133,11 @@ class WorkflowRecord(Base):
             name="ck_workflows_status",
         ),
         Index("ix_workflows_type_status", "workflow_type", "status"),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_workflows_id_organization_id",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -163,6 +174,11 @@ class RequirementRecord(Base):
         ),
         Index("ix_requirements_workflow_status", "workflow_id", "status"),
         Index("ix_requirements_due_date", "due_date"),
+        UniqueConstraint(
+            "id",
+            "workflow_id",
+            name="uq_requirements_id_workflow_id",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -445,3 +461,113 @@ class LearningSignalRecord(Base):
     discovery_reason: Mapped[str | None] = mapped_column(Text)
     original_confidence: Mapped[float | None] = mapped_column(Float)
     resulting_requirement: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class AssistanceProposalRecord(Base):
+    __tablename__ = "assistance_proposals"
+    __table_args__ = (
+        CheckConstraint(
+            f"recommendation_type IN ({_allowed_values(RecommendationType)})",
+            name="ck_assistance_proposals_recommendation_type",
+        ),
+        CheckConstraint(
+            f"lifecycle_state IN ({_allowed_values(ProposalState)})",
+            name="ck_assistance_proposals_lifecycle_state",
+        ),
+        ForeignKeyConstraint(
+            ["workflow_id", "organization_id"],
+            ["workflows.id", "workflows.organization_id"],
+            name="fk_assistance_proposals_workflow_organization",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["requirement_id", "workflow_id"],
+            ["requirements.id", "requirements.workflow_id"],
+            name="fk_assistance_proposals_requirement_workflow",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_assistance_proposals_id_organization_id",
+        ),
+        Index("ix_assistance_proposals_organization_id", "organization_id"),
+        Index("ix_assistance_proposals_workflow_id", "workflow_id"),
+        Index(
+            "uq_assistance_proposals_open_condition",
+            "organization_id",
+            "workflow_id",
+            "requirement_id",
+            "recommendation_type",
+            unique=True,
+            postgresql_where=text(
+                "lifecycle_state IN ('proposed', 'approved')"
+            ),
+            sqlite_where=text(
+                "lifecycle_state IN ('proposed', 'approved')"
+            ),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "organizations.id",
+            name="fk_assistance_proposals_organization_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    workflow_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    requirement_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    recommendation_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    intended_outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AssistanceProposalEventRecord(Base):
+    __tablename__ = "assistance_proposal_events"
+    __table_args__ = (
+        CheckConstraint(
+            f"event_type IN ({_allowed_values(ProposalEventType)})",
+            name="ck_assistance_proposal_events_event_type",
+        ),
+        ForeignKeyConstraint(
+            ["proposal_id", "organization_id"],
+            [
+                "assistance_proposals.id",
+                "assistance_proposals.organization_id",
+            ],
+            name="fk_assistance_proposal_events_proposal_organization",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "proposal_id",
+            "event_type",
+            name="uq_assistance_proposal_events_proposal_type",
+        ),
+        Index(
+            "ix_assistance_proposal_events_organization_id",
+            "organization_id",
+        ),
+        Index("ix_assistance_proposal_events_proposal_id", "proposal_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "organizations.id",
+            name="fk_assistance_proposal_events_organization_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    proposal_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

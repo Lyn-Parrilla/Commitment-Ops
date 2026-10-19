@@ -13,6 +13,7 @@ from app.persistence.exceptions import (
     InvalidAssociationError,
     PersistenceError,
 )
+from app.persistence.assistance_repository import AssistanceRepository
 from app.persistence.discovery_repository import DiscoveryRepository
 from app.persistence.repository import (
     AuditEvent,
@@ -23,6 +24,7 @@ from app.persistence.repository import (
 )
 
 __all__ = [
+    "AssistanceRepository",
     "AuditEvent",
     "Base",
     "DatabaseConfigurationError",

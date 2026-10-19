@@ -25,3 +25,8 @@ class CandidateNotFoundError(ResourceNotFoundError):
 class LearningSignalNotFoundError(ResourceNotFoundError):
     def __init__(self, signal_id: UUID) -> None:
         super().__init__(f"learning signal {signal_id} was not found")
+
+
+class AssistanceProposalNotFoundError(ResourceNotFoundError):
+    def __init__(self, proposal_id: UUID) -> None:
+        super().__init__(f"assistance proposal {proposal_id} was not found")

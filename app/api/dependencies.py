@@ -12,9 +12,11 @@ from app.api.auth import (
     get_authenticated_principal,
 )
 from app.application import WorkflowService
+from app.application.assistance import AssistanceService
 from app.application.discovery import DiscoveryService
 from app.domain import Person
 from app.persistence import (
+    AssistanceRepository,
     DiscoveryRepository,
     OrganizationRepository,
     SessionFactory,
@@ -52,6 +54,15 @@ def _discovery_repository() -> DiscoveryRepository:
 
 def get_discovery_repository() -> DiscoveryRepository:
     return _discovery_repository()
+
+
+@lru_cache
+def _assistance_repository() -> AssistanceRepository:
+    return AssistanceRepository(_session_factory())
+
+
+def get_assistance_repository() -> AssistanceRepository:
+    return _assistance_repository()
 
 
 def get_organization_repository() -> OrganizationRepository:
@@ -122,4 +133,36 @@ def get_discovery_service(
         organization_id=organization_id,
         user_id=principal.user_id,
         reviewer=reviewer,
+    )
+
+
+def get_assistance_service(
+    principal: Annotated[
+        AuthenticatedPrincipal,
+        Depends(get_authenticated_principal),
+    ],
+    organization_id: Annotated[UUID, Header(alias="X-Organization-ID")],
+    workflow_repository: Annotated[
+        WorkflowRepository,
+        Depends(get_workflow_repository),
+    ],
+    assistance_repository: Annotated[
+        AssistanceRepository,
+        Depends(get_assistance_repository),
+    ],
+    organization_repository: Annotated[
+        OrganizationRepository,
+        Depends(get_organization_repository),
+    ],
+) -> AssistanceService:
+    if not organization_repository.has_active_membership(
+        organization_id=organization_id,
+        user_id=principal.user_id,
+    ):
+        raise OrganizationAccessDeniedError
+    return AssistanceService(
+        workflow_repository,
+        assistance_repository,
+        organization_id=organization_id,
+        user_id=principal.user_id,
     )

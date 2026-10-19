@@ -92,7 +92,9 @@ def runtime_login_block_reason(bind: object, role_name: str | None = None) -> st
                           'workflows',
                           'requirements',
                           'evidence',
-                          'audit_events'
+                          'audit_events',
+                          'assistance_proposals',
+                          'assistance_proposal_events'
                       )
                 ) AS assumes_owner
             FROM pg_roles AS login

@@ -108,7 +108,8 @@ def test_application_role_is_subject_to_forced_rls(postgres_engine) -> None:
                 WHERE pg_namespace.nspname = current_schema()
                   AND pg_class.relname IN (
                     'organizations', 'organization_memberships', 'people',
-                    'workflows', 'requirements', 'evidence', 'audit_events'
+                    'workflows', 'requirements', 'evidence', 'audit_events',
+                    'assistance_proposals', 'assistance_proposal_events'
                   )
                   AND pg_class.relrowsecurity
                   AND pg_class.relforcerowsecurity
@@ -126,7 +127,7 @@ def test_application_role_is_subject_to_forced_rls(postgres_engine) -> None:
     assert can_create_role is False
     assert can_create_db is False
     assert can_login is False
-    assert forced == 7
+    assert forced == 9
 
 
 def test_cross_tenant_statements_fail_closed(postgres_engine) -> None:
@@ -596,7 +597,7 @@ def test_postgresql_downgrade_keeps_deferred_person_foreign_keys() -> None:
                 ),
                 {"id": person_id},
             )
-        assert version == "20261018_05"
+        assert version == "20261018_06"
         assert deferred is True
         assert policy == 1
     finally:

@@ -364,8 +364,11 @@ use validated human outcomes rather than unreviewed AI output.
 
 Factual workflow events are appended to the existing audit history when a
 workflow save changes audited state. An unchanged save appends nothing.
-Recommendations, model training, and automatic changes to reminders,
-assignments, or engagement strategy are not implemented.
+Assistance proposals can be detected from an overdue or blocked requirement,
+then approved, rejected, or dismissed by an authenticated member. Execution
+records that check and measures the requirement afterward. It does not change
+reminders, assignments, or engagement strategy. Model training is not
+implemented.
 
 The planned workflow-intelligence loop will:
 

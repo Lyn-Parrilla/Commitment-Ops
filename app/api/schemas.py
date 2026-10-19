@@ -15,6 +15,13 @@ from app.application import (
     WorkflowTransition,
 )
 from app.application.discovery import CandidateReviewAction
+from app.domain.assistance import (
+    ProposalDecision,
+    ProposalEventType,
+    ProposalState,
+    RecommendationType,
+)
+from app.persistence.assistance_repository import StoredProposal
 from app.domain import (
     DiscoveryClassification,
     DocumentType,
@@ -365,6 +372,55 @@ class CandidateResponse(APIModel):
             learning_signals=[
                 LearningSignalResponse.from_domain(signal)
                 for signal in candidate.learning_signals
+            ],
+        )
+
+
+class AssistanceDecisionRequest(APIModel):
+    action: ProposalDecision
+
+
+class AssistanceEventResponse(APIModel):
+    id: UUID
+    event_type: ProposalEventType
+    actor_user_id: UUID
+    occurred_at: datetime
+    detail: dict[str, Any]
+
+
+class AssistanceProposalResponse(APIModel):
+    id: UUID
+    organization_id: UUID
+    workflow_id: UUID
+    requirement_id: UUID
+    recommendation_type: RecommendationType
+    rationale: str
+    intended_outcome: str
+    state: ProposalState
+    created_at: datetime
+    events: list[AssistanceEventResponse]
+
+    @classmethod
+    def from_stored(cls, proposal: StoredProposal) -> AssistanceProposalResponse:
+        return cls(
+            id=proposal.id,
+            organization_id=proposal.organization_id,
+            workflow_id=proposal.workflow_id,
+            requirement_id=proposal.requirement_id,
+            recommendation_type=proposal.recommendation_type,
+            rationale=proposal.rationale,
+            intended_outcome=proposal.intended_outcome,
+            state=proposal.state,
+            created_at=proposal.created_at,
+            events=[
+                AssistanceEventResponse(
+                    id=event.id,
+                    event_type=event.event_type,
+                    actor_user_id=event.actor_user_id,
+                    occurred_at=event.occurred_at,
+                    detail=event.detail,
+                )
+                for event in proposal.events
             ],
         )
 
