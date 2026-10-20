@@ -125,7 +125,7 @@ a { color: var(--primary); }
 
 .field span { font-size: 0.92rem; }
 
-input, select {
+input, select, textarea {
   width: 100%;
   border: 1px solid var(--line);
   background: white;
@@ -134,9 +134,30 @@ input, select {
   color: var(--ink);
 }
 
-input:focus, select:focus {
+textarea {
+  min-height: 5.5rem;
+  resize: vertical;
+}
+
+input:focus, select:focus, textarea:focus {
   outline: 2px solid var(--accent);
   border-color: transparent;
+}
+
+.form-grid {
+  display: grid;
+  gap: 0 1rem;
+}
+
+.requirement-form { margin-top: 1rem; }
+
+.requirement-form h3 { margin-bottom: 0.25rem; }
+
+.requirement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 
 .button, .button-secondary {
@@ -151,7 +172,7 @@ input:focus, select:focus {
   color: white;
 }
 
-.button:disabled { opacity: 0.65; cursor: wait; }
+.button:disabled, .button-secondary:disabled { opacity: 0.65; cursor: wait; }
 
 .button-secondary {
   background: transparent;
@@ -199,6 +220,11 @@ input:focus, select:focus {
 .requirement p { margin: 0.2rem 0 0; }
 
 .org-select { min-width: 12rem; }
+
+@media (min-width: 721px) {
+  .form-grid { grid-template-columns: 1fr 1fr; }
+  .form-grid .wide { grid-column: 1 / -1; }
+}
 
 @media (max-width: 720px) {
   .app-header, .toolbar, .header-actions {

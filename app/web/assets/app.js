@@ -353,27 +353,208 @@ function createView(errorMessage = "") {
   });
   return shell(el("section", {}, [
     el("h2", { text: "New workflow" }),
-    el("p", { class: "lede", text: "Uses the existing workflow contract. Requirements are added later." }),
+    el("p", { class: "lede", text: "Add requirements after the workflow is created." }),
     form,
   ]));
 }
 
+function supportedStatusActions(requirement) {
+  if (!requirement.is_authoritative) return [];
+  const actions = [];
+  if (requirement.status === "not_started" || requirement.status === "blocked") {
+    actions.push(["start_work", "Start work"]);
+  }
+  if (requirement.status === "in_progress") {
+    actions.push(["block", "Block"]);
+  }
+  if (requirement.status === "not_started" || requirement.status === "in_progress") {
+    actions.push(["complete", "Complete"]);
+  }
+  return actions;
+}
+
+function requirementCard(workflow, requirement) {
+  const card = el("article", { class: "card requirement" }, [
+    el("h3", { text: requirement.title }),
+    el("p", { text: requirement.description }),
+    el("div", { class: "requirement-meta" }, [
+      el("span", { class: "chip", text: labelFor(requirement.status) }),
+      el("span", { class: "chip", text: labelFor(requirement.review_status) }),
+      el("span", { class: "muted", text: requirement.owner?.name || "Unassigned" }),
+      el("span", {
+        class: "muted",
+        text: requirement.owner?.email || "",
+      }),
+      el("span", { class: "muted", text: requirement.due_date || "No due date" }),
+    ]),
+    el("p", { text: requirement.evidence_expectation }),
+  ]);
+  const actions = supportedStatusActions(requirement);
+  if (actions.length) {
+    card.append(el("div", { class: "requirement-actions" }, actions.map(([action, label]) => {
+      const button = el("button", {
+        class: "button-secondary",
+        type: "button",
+        text: label,
+      });
+      button.addEventListener("click", () => {
+        transitionRequirement(workflow, requirement, action, card);
+      });
+      return button;
+    })));
+  }
+  return card;
+}
+
+async function transitionRequirement(workflow, requirement, action, card) {
+  const buttons = [...card.querySelectorAll("button")];
+  for (const button of buttons) button.disabled = true;
+  card.querySelector(".banner")?.remove();
+  try {
+    await api(
+      `/api/v1/workflows/${workflow.id}/requirements/${requirement.id}/transitions`,
+      {
+        method: "POST",
+        organization: activeOrganization.id,
+        body: { action },
+      },
+    );
+  } catch (error) {
+    if (error.status === 401) return showExpired();
+    for (const button of buttons) button.disabled = false;
+    card.prepend(banner(error.message));
+    return;
+  }
+  try {
+    const fresh = await reloadWorkflow(workflow.id);
+    mount(detailView(fresh));
+  } catch (error) {
+    if (error.status === 401) return showExpired();
+    card.prepend(banner("The status was saved. Reload this page to see it."));
+  }
+}
+
+function requirementForm(workflow) {
+  const title = el("input", {
+    id: "requirement-title",
+    maxlength: "500",
+    required: "required",
+  });
+  const description = el("textarea", {
+    id: "requirement-description",
+    required: "required",
+  });
+  const ownerName = el("input", {
+    id: "requirement-owner-name",
+    maxlength: "200",
+    required: "required",
+  });
+  const ownerEmail = el("input", {
+    id: "requirement-owner-email",
+    type: "email",
+    maxlength: "320",
+    required: "required",
+  });
+  const evidence = el("textarea", {
+    id: "requirement-evidence",
+    required: "required",
+  });
+  const dueDate = el("input", { id: "requirement-due-date", type: "date" });
+  const submit = el("button", {
+    class: "button",
+    type: "submit",
+    text: "Add requirement",
+  });
+  const form = el("form", { class: "card requirement-form" }, [
+    el("h3", { text: "Add a requirement" }),
+    el("p", {
+      class: "muted",
+      text: "Record what was promised, who owns it, and what evidence is expected.",
+    }),
+    el("div", { class: "form-grid" }, [
+      el("label", { class: "field wide" }, [el("span", { text: "Title" }), title]),
+      el("label", { class: "field wide" }, [
+        el("span", { text: "Description" }),
+        description,
+      ]),
+      el("label", { class: "field" }, [el("span", { text: "Owner name" }), ownerName]),
+      el("label", { class: "field" }, [el("span", { text: "Owner email" }), ownerEmail]),
+      el("label", { class: "field wide" }, [
+        el("span", { text: "Evidence expectation" }),
+        evidence,
+      ]),
+      el("label", { class: "field" }, [el("span", { text: "Due date" }), dueDate]),
+    ]),
+    el("div", { class: "toolbar" }, [submit]),
+  ]);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    form.querySelector(".banner")?.remove();
+    const body = {
+      title: title.value.trim(),
+      description: description.value.trim(),
+      owner: {
+        name: ownerName.value.trim(),
+        email: ownerEmail.value.trim(),
+      },
+      evidence_expectation: evidence.value.trim(),
+      provenance: "user_provided",
+    };
+    if (dueDate.value) body.due_date = dueDate.value;
+    if (
+      !body.title
+      || !body.description
+      || !body.owner.name
+      || !body.owner.email
+      || !body.evidence_expectation
+    ) {
+      form.insertBefore(banner("Complete the required fields."), form.querySelector("h3").nextSibling);
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = "Saving…";
+    try {
+      await api(`/api/v1/workflows/${workflow.id}/requirements`, {
+        method: "POST",
+        organization: activeOrganization.id,
+        body,
+      });
+    } catch (error) {
+      if (error.status === 401) return showExpired();
+      submit.disabled = false;
+      submit.textContent = "Add requirement";
+      form.insertBefore(banner(error.message), form.querySelector("h3").nextSibling);
+      return;
+    }
+    try {
+      const fresh = await reloadWorkflow(workflow.id);
+      mount(detailView(fresh));
+    } catch (error) {
+      if (error.status === 401) return showExpired();
+      form.insertBefore(
+        banner("The requirement was saved. Reload this page to see it."),
+        form.querySelector("h3").nextSibling,
+      );
+    }
+  });
+  return form;
+}
+
+async function reloadWorkflow(workflowId) {
+  return api(`/api/v1/workflows/${workflowId}`, {
+    organization: activeOrganization.id,
+  });
+}
+
 function detailView(workflow) {
   const requirements = workflow.requirements.length
-    ? el("div", { class: "stack" }, workflow.requirements.map((requirement) => el("article", { class: "card requirement" }, [
-        el("h3", { text: requirement.title }),
-        el("p", { text: requirement.description }),
-        el("div", { class: "requirement-meta" }, [
-          el("span", { class: "chip", text: labelFor(requirement.status) }),
-          el("span", { class: "chip", text: labelFor(requirement.review_status) }),
-          el("span", { class: "muted", text: requirement.owner?.name || "Unassigned" }),
-          el("span", { class: "muted", text: requirement.due_date || "No due date" }),
-        ]),
-        el("p", { text: requirement.evidence_expectation }),
-      ])))
+    ? el("div", { class: "stack" }, workflow.requirements.map((requirement) => (
+      requirementCard(workflow, requirement)
+    )))
     : el("div", { class: "card" }, [
         el("h3", { text: "No requirements yet" }),
-        el("p", { class: "muted", text: "This workflow has no persisted requirements." }),
+        el("p", { class: "muted", text: "Add the first requirement for this workflow." }),
       ]);
   return shell(el("section", {}, [
     el("p", {}, [el("a", { href: "#/workflows", text: "Back to workflows" })]),
@@ -384,6 +565,7 @@ function detailView(workflow) {
     ]),
     el("h3", { text: "Requirements" }),
     requirements,
+    requirementForm(workflow),
   ]));
 }
 

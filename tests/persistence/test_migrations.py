@@ -43,12 +43,9 @@ def test_initial_migration_creates_accountability_schema(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'migration-test.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
-    command.check(config)
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
+    command.check(_bind_sqlite_url(config, database_url))
 
     engine = create_database_engine(database_url)
     tables = set(inspect(engine).get_table_names())
@@ -72,10 +69,8 @@ def test_branding_migration_preserves_existing_organization_records(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'branding-migration.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "20261014_02")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "20261014_02")
 
     organization_id = uuid4()
     user_id = uuid4()
@@ -107,8 +102,8 @@ def test_branding_migration_preserves_existing_organization_records(
         )
     engine.dispose()
 
-    command.upgrade(config, "head")
-    command.check(config)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
+    command.check(_bind_sqlite_url(config, database_url))
 
     branded = sa.table(
         "organizations",
@@ -155,10 +150,8 @@ def test_tenant_migration_preserves_existing_workflows_as_unassigned(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'legacy-migration.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "20261009_01")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "20261009_01")
 
     workflow_id = uuid4()
     legacy_workflows = sa.table(
@@ -180,7 +173,7 @@ def test_tenant_migration_preserves_existing_workflows_as_unassigned(
         )
     engine.dispose()
 
-    command.upgrade(config, "head")
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
 
     migrated_workflows = sa.table(
         "workflows",
@@ -217,10 +210,8 @@ def test_downgrade_refuses_non_legacy_tenant_assignments(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'tenant-downgrade.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
 
     organization_id = uuid4()
     workflow_id = uuid4()
@@ -270,8 +261,8 @@ def test_downgrade_refuses_non_legacy_tenant_assignments(
     engine.dispose()
 
     with pytest.raises(Exception, match="Refusing to downgrade"):
-        command.downgrade(config, "20261009_01")
-    command.check(config)
+        command.downgrade(_bind_sqlite_url(config, database_url), "20261009_01")
+    command.check(_bind_sqlite_url(config, database_url))
 
     engine = create_database_engine(database_url)
     with engine.connect() as connection:
@@ -291,10 +282,8 @@ def test_downgrade_refuses_nonlegacy_organization_without_children(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'empty-tenant-downgrade.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
 
     organization_id = uuid4()
     organizations = sa.table(
@@ -313,8 +302,8 @@ def test_downgrade_refuses_nonlegacy_organization_without_children(
     engine.dispose()
 
     with pytest.raises(Exception, match="Refusing to downgrade"):
-        command.downgrade(config, "20261009_01")
-    command.check(config)
+        command.downgrade(_bind_sqlite_url(config, database_url), "20261009_01")
+    command.check(_bind_sqlite_url(config, database_url))
 
     engine = create_database_engine(database_url)
     with engine.connect() as connection:
@@ -337,10 +326,8 @@ def test_renamed_placeholder_does_not_hide_a_nonlegacy_organization(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'renamed-placeholder.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
 
     legacy_organization_id = UUID("00000000-0000-0000-0000-000000000001")
     other_organization_id = uuid4()
@@ -365,7 +352,7 @@ def test_renamed_placeholder_does_not_hide_a_nonlegacy_organization(
     engine.dispose()
 
     with pytest.raises(Exception, match="Refusing to downgrade"):
-        command.downgrade(config, "20261009_01")
+        command.downgrade(_bind_sqlite_url(config, database_url), "20261009_01")
 
     engine = create_database_engine(database_url)
     with engine.connect() as connection:
@@ -391,10 +378,8 @@ def test_downgrade_refuses_an_inactive_membership_on_the_placeholder(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'legacy-membership.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
 
     legacy_organization_id = UUID("00000000-0000-0000-0000-000000000001")
     user_id = uuid4()
@@ -416,7 +401,7 @@ def test_downgrade_refuses_an_inactive_membership_on_the_placeholder(
     engine.dispose()
 
     with pytest.raises(Exception, match="Refusing to downgrade"):
-        command.downgrade(config, "20261009_01")
+        command.downgrade(_bind_sqlite_url(config, database_url), "20261009_01")
 
     engine = create_database_engine(database_url)
     with engine.connect() as connection:
@@ -439,10 +424,8 @@ def test_renamed_placeholder_name_is_dropped_with_the_organization_table(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'renamed-only.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "20261009_01")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "20261009_01")
 
     workflow_id = uuid4()
     legacy_workflows = sa.table(
@@ -463,7 +446,7 @@ def test_renamed_placeholder_name_is_dropped_with_the_organization_table(
             )
         )
     engine.dispose()
-    command.upgrade(config, "head")
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
 
     legacy_organization_id = UUID("00000000-0000-0000-0000-000000000001")
     organizations = sa.table(
@@ -479,7 +462,7 @@ def test_renamed_placeholder_name_is_dropped_with_the_organization_table(
             .values(name="Renamed Placeholder")
         )
     engine.dispose()
-    command.downgrade(config, "20261009_01")
+    command.downgrade(_bind_sqlite_url(config, database_url), "20261009_01")
 
     stored = sa.table(
         "workflows",
@@ -505,10 +488,8 @@ def test_downgrade_removes_only_the_legacy_placeholder(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'legacy-downgrade.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "20261009_01")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "20261009_01")
 
     workflow_id = uuid4()
     legacy_workflows = sa.table(
@@ -529,8 +510,8 @@ def test_downgrade_removes_only_the_legacy_placeholder(
             )
         )
     engine.dispose()
-    command.upgrade(config, "head")
-    command.downgrade(config, "20261009_01")
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
+    command.downgrade(_bind_sqlite_url(config, database_url), "20261009_01")
 
     engine = create_database_engine(database_url)
     tables = set(inspect(engine).get_table_names())
@@ -560,10 +541,8 @@ def test_downgrade_to_prior_revision_preserves_workflow_rows(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'assistance-downgrade.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
     workflow_id = uuid4()
     requirement_id = uuid4()
     person_id = uuid4()
@@ -574,7 +553,7 @@ def test_downgrade_to_prior_revision_preserves_workflow_rows(
         person_id=person_id,
     )
 
-    command.downgrade(config, "20261018_05")
+    command.downgrade(_bind_sqlite_url(config, database_url), "20261018_05")
 
     engine = create_database_engine(database_url)
     inspector = inspect(engine)
@@ -620,10 +599,8 @@ def test_downgrade_refuses_populated_assistance_tables(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'populated-assistance.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    get_settings.cache_clear()
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
     workflow_id = uuid4()
     requirement_id = uuid4()
     person_id = uuid4()
@@ -689,7 +666,7 @@ def test_downgrade_refuses_populated_assistance_tables(
         Exception,
         match="Refusing to downgrade while assistance proposals",
     ):
-        command.downgrade(config, "20261018_05")
+        command.downgrade(_bind_sqlite_url(config, database_url), "20261018_05")
 
     engine = create_database_engine(database_url)
     inspector = inspect(engine)
@@ -724,6 +701,26 @@ def test_downgrade_refuses_populated_assistance_tables(
     assert stored_state == "proposed"
     assert event_count == 1
     assert "uq_workflows_id_organization_id" in constraints
+
+
+def _sqlite_alembic_config(
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Config:
+    """Use this test's SQLite file even when a migration URL is configured."""
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.delenv("MIGRATION_DATABASE_URL", raising=False)
+    get_settings.cache_clear()
+    return _bind_sqlite_url(Config("alembic.ini"), database_url)
+
+
+def _bind_sqlite_url(config: Config, database_url: str) -> Config:
+    config.set_main_option(
+        "sqlalchemy.url",
+        database_url.replace("%", "%%"),
+    )
+    return config
 
 
 def _insert_legacy_requirement(

@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.domain import RequirementStatus, ReviewStatus, WorkflowStatus
 from app.persistence import WorkflowRepository
+from tests.api.conftest import TEST_OTHER_ORGANIZATION_ID, TEST_OTHER_USER_ID
 
 ORGANIZATION_ID = UUID("30000000-0000-0000-0000-000000000001")
 
@@ -273,6 +274,143 @@ def test_invalid_request_bodies_return_documented_422_format(
         assert payload["error"]["details"]
 
 
+def test_browser_requirement_is_saved_and_its_status_reloads(
+    api_client: TestClient,
+) -> None:
+    workflow = _create_workflow(api_client)
+
+    created = api_client.post(
+        f"/api/v1/workflows/{workflow['id']}/requirements",
+        json=_browser_requirement_payload(),
+    )
+    assert created.status_code == 201
+    requirement = created.json()
+    assert requirement["provenance"] == "user_provided"
+    assert requirement["review_status"] == "approved"
+    assert requirement["is_authoritative"] is True
+    assert requirement["status"] == "not_started"
+    assert requirement["owner"]["email"] == "owner@example.org"
+    assert requirement["due_date"] is None
+
+    reloaded = api_client.get(f"/api/v1/workflows/{workflow['id']}")
+    assert reloaded.status_code == 200
+    assert reloaded.json()["requirements"][0]["id"] == requirement["id"]
+
+    for action, status in (
+        ("start_work", "in_progress"),
+        ("block", "blocked"),
+        ("start_work", "in_progress"),
+        ("complete", "completed"),
+    ):
+        transition = api_client.post(
+            _requirement_transition_url(workflow["id"], requirement["id"]),
+            json={"action": action},
+        )
+        assert transition.status_code == 200
+        assert transition.json()["status"] == status
+        current = api_client.get(f"/api/v1/workflows/{workflow['id']}")
+        assert current.json()["requirements"][0]["status"] == status
+
+    rejected = api_client.post(
+        _requirement_transition_url(workflow["id"], requirement["id"]),
+        json={"action": "block"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "invalid_transition"
+    unchanged = api_client.get(f"/api/v1/workflows/{workflow['id']}")
+    assert unchanged.json()["requirements"][0]["status"] == "completed"
+
+
+def test_requirement_validation_reports_field_errors(
+    api_client: TestClient,
+) -> None:
+    workflow = _create_workflow(api_client)
+    payload = _browser_requirement_payload()
+    payload["owner"] = {"name": "Synthetic Owner"}
+
+    response = api_client.post(
+        f"/api/v1/workflows/{workflow['id']}/requirements",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "request_validation_error"
+    assert error["details"]
+    assert any(item["message"] for item in error["details"])
+    stored = api_client.get(f"/api/v1/workflows/{workflow['id']}")
+    assert stored.json()["requirements"] == []
+
+
+def test_ai_inferred_requirement_cannot_be_created_already_approved(
+    api_client: TestClient,
+) -> None:
+    workflow = _create_workflow(api_client)
+    forced = _requirement_payload(provenance="ai_inferred")
+    forced["review_status"] = "approved"
+
+    rejected = api_client.post(
+        f"/api/v1/workflows/{workflow['id']}/requirements",
+        json=forced,
+    )
+    created = api_client.post(
+        f"/api/v1/workflows/{workflow['id']}/requirements",
+        json=_requirement_payload(provenance="ai_inferred"),
+    )
+
+    assert rejected.status_code == 422
+    assert created.status_code == 201
+    assert created.json()["review_status"] == "pending_review"
+    assert created.json()["is_authoritative"] is False
+    premature = api_client.post(
+        _requirement_transition_url(workflow["id"], created.json()["id"]),
+        json={"action": "start_work"},
+    )
+    assert premature.status_code == 409
+    reloaded = api_client.get(f"/api/v1/workflows/{workflow['id']}")
+    assert reloaded.json()["requirements"][0]["status"] == "not_started"
+
+
+def test_browser_requirement_requires_authentication(
+    api_client: TestClient,
+) -> None:
+    saved = dict(api_client.headers)
+    api_client.headers.pop("Authorization", None)
+    api_client.headers.pop("X-Organization-ID", None)
+    try:
+        response = api_client.post(
+            f"/api/v1/workflows/{uuid4()}/requirements",
+            json=_browser_requirement_payload(),
+        )
+    finally:
+        api_client.headers.clear()
+        api_client.headers.update(saved)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "authentication_required"
+
+
+def test_browser_requirement_payload_cannot_cross_organizations(
+    api_client: TestClient,
+    token_factory,
+) -> None:
+    workflow = _create_workflow(api_client)
+    other_headers = {
+        "Authorization": f"Bearer {token_factory(user_id=TEST_OTHER_USER_ID)}",
+        "X-Organization-ID": str(TEST_OTHER_ORGANIZATION_ID),
+    }
+
+    response = api_client.post(
+        f"/api/v1/workflows/{workflow['id']}/requirements",
+        json=_browser_requirement_payload(),
+        headers=other_headers,
+    )
+
+    assert response.status_code == 404
+    stored = api_client.get(f"/api/v1/workflows/{workflow['id']}")
+    assert stored.json()["requirements"] == []
+
+
 def test_existing_health_endpoint_remains_available(
     api_client: TestClient,
 ) -> None:
@@ -309,6 +447,19 @@ def _add_requirement(
     assert payload["review_status"] == "pending_review"
     assert payload["is_authoritative"] is False
     return payload
+
+
+def _browser_requirement_payload() -> dict:
+    return {
+        "title": "Submit quarterly outcomes report",
+        "description": "Submit the synthetic quarterly report.",
+        "owner": {
+            "name": "Synthetic Owner",
+            "email": "owner@example.org",
+        },
+        "evidence_expectation": "Signed participant records",
+        "provenance": "user_provided",
+    }
 
 
 def _requirement_payload(*, provenance: str) -> dict:

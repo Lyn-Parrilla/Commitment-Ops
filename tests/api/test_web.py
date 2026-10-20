@@ -30,6 +30,29 @@ def test_browser_assets_are_served_with_the_api(client: TestClient) -> None:
     assert client.get("/health").status_code == 200
 
 
+def test_detail_page_adds_user_provided_requirements_and_status_actions() -> None:
+    script = (
+        Path(__file__).parents[2] / "app" / "web" / "assets" / "app.js"
+    ).read_text()
+
+    assert 'provenance: "user_provided"' in script
+    assert "ai_inferred" not in script
+    assert "review_status:" not in script
+    assert "requirement.review_status" in script
+    assert "/requirements/${requirement.id}/transitions" in script
+    assert "start_work" in script
+    assert '["block", "Block"]' in script
+    assert '["complete", "Complete"]' in script
+    assert "body: { action }" in script
+    assert "X-Organization-ID" in script
+    assert "organization_id" not in script
+    assert "requirement.status =" not in script.replace("requirement.status ===", "")
+    assert "reloadWorkflow" in script
+    assert "submit.disabled = true" in script
+    assert "button.disabled = true" in script
+    assert "payload?.error?.details" in script
+
+
 def test_image_packages_the_browser_assets() -> None:
     repository_root = Path(__file__).parents[2]
     dockerfile = (repository_root / "Dockerfile").read_text()
