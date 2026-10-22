@@ -39,8 +39,129 @@ function el(tag, attributes = {}, children = []) {
   return node;
 }
 
+/* attention-rules */
+const WORKFLOW_TYPE_LABELS = Object.fromEntries(WORKFLOW_TYPES);
+const WORKFLOW_STATUS_LABELS = {
+  draft: "Draft",
+  active: "Active",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+const WORK_LABELS = {
+  not_started: "Not started",
+  in_progress: "In progress",
+  blocked: "Blocked",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+const REVIEW_LABELS = {
+  pending_review: "Awaiting review",
+  approved: "Approved",
+  rejected: "Rejected",
+};
+
+function readableLabel(value, labels) {
+  if (value == null || value === "") return "";
+  if (labels && Object.prototype.hasOwnProperty.call(labels, value)) {
+    return labels[value];
+  }
+  return String(value)
+    .replaceAll("_", " ")
+    .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function parseCalendarDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!match) return null;
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  };
+}
+
+function localCalendarDate(now = new Date()) {
+  return {
+    year: now.getFullYear(),
+    month: now.getMonth() + 1,
+    day: now.getDate(),
+  };
+}
+
+function compareCalendarDates(left, right) {
+  if (left.year !== right.year) return left.year - right.year;
+  if (left.month !== right.month) return left.month - right.month;
+  return left.day - right.day;
+}
+
+function isPastDue(requirement, today) {
+  const due = parseCalendarDate(requirement?.due_date);
+  if (!due) return false;
+  if (requirement.status === "completed" || requirement.status === "cancelled") {
+    return false;
+  }
+  return compareCalendarDates(due, today) < 0;
+}
+
+function attentionReasons(requirement, today) {
+  const reasons = [];
+  if (isPastDue(requirement, today)) reasons.push("Past due");
+  if (requirement?.status === "blocked") reasons.push("Blocked");
+  if (requirement?.review_status === "pending_review") reasons.push("Awaiting review");
+  return reasons;
+}
+
+function attentionItems(workflows, today = localCalendarDate()) {
+  const items = [];
+  for (const workflow of workflows || []) {
+    if (!workflow?.id) continue;
+    for (const requirement of workflow.requirements || []) {
+      const reasons = attentionReasons(requirement, today);
+      if (!reasons.length) continue;
+      items.push({
+        workflowId: workflow.id,
+        workflowName: workflow.name || "",
+        title: requirement?.title || "",
+        ownerName: requirement?.owner?.name || "",
+        dueDate: parseCalendarDate(requirement?.due_date) ? requirement.due_date : "",
+        reasons,
+      });
+    }
+  }
+  return items;
+}
+
+function formatCalendarDate(value) {
+  const parts = parseCalendarDate(value);
+  if (!parts) return "";
+  return new Date(parts.year, parts.month - 1, parts.day).toLocaleDateString(
+    undefined,
+    { year: "numeric", month: "long", day: "numeric" },
+  );
+}
+
+function provenanceLabel(requirement) {
+  const provenance = requirement?.provenance;
+  if (!provenance) return "";
+  if (provenance === "user_provided") return "Entered by a person";
+  if (provenance === "ai_inferred" && requirement.review_status === "pending_review") {
+    return "Suggested, awaiting approval";
+  }
+  if (provenance === "ai_inferred" && requirement.review_status === "approved") {
+    return "Suggested, approved by a person";
+  }
+  if (provenance === "ai_inferred" && requirement.review_status === "rejected") {
+    return "Suggested, not approved";
+  }
+  if (provenance === "document_explicit") return "Taken from a source document";
+  if (provenance === "organization_template") return "From an organization template";
+  if (provenance === "system_derived") return "Recorded by the system";
+  return "";
+}
+/* end-attention-rules */
+
 function labelFor(value) {
-  return String(value || "").replaceAll("_", " ");
+  return readableLabel(value);
 }
 
 function readSession() {
@@ -287,6 +408,42 @@ function loadingView(message) {
   return shell(el("p", { class: "lede", role: "status", text: message }));
 }
 
+function reasonClass(reason) {
+  if (reason === "Past due") return "chip reason-past-due";
+  if (reason === "Blocked") return "chip reason-blocked";
+  return "chip reason-review";
+}
+
+function attentionView(workflows) {
+  const items = attentionItems(workflows);
+  if (!items.length) {
+    return el("div", { class: "card" }, [
+      el("h3", { text: "Nothing needs attention" }),
+      el("p", {
+        class: "muted",
+        text: "No requirements are past due, blocked, or awaiting review.",
+      }),
+    ]);
+  }
+  return el("div", { class: "stack" }, items.map((item) => el("a", {
+    class: "card card-link attention-item",
+    href: `#/workflows/${item.workflowId}`,
+  }, [
+    el("p", { class: "muted", text: item.workflowName }),
+    item.title ? el("h3", { text: item.title }) : null,
+    el("div", { class: "meta" }, item.reasons.map((reason) => (
+      el("span", { class: reasonClass(reason), text: reason })
+    ))),
+    el("div", { class: "meta" }, [
+      item.ownerName ? el("span", { text: item.ownerName }) : null,
+      item.dueDate ? el("span", {
+        class: item.reasons.includes("Past due") ? "is-past-due" : "muted",
+        text: formatCalendarDate(item.dueDate),
+      }) : null,
+    ]),
+  ])));
+}
+
 function dashboardView(workflows, errorMessage = "") {
   const items = workflows.map((workflow) => el("a", {
     class: "card card-link",
@@ -294,15 +451,17 @@ function dashboardView(workflows, errorMessage = "") {
   }, [
     el("h3", { text: workflow.name }),
     el("div", { class: "meta" }, [
-      el("span", { class: "chip", text: labelFor(workflow.workflow_type) }),
-      el("span", { class: "chip", text: labelFor(workflow.status) }),
+      el("span", { class: "chip", text: readableLabel(workflow.workflow_type, WORKFLOW_TYPE_LABELS) }),
+      el("span", { class: "chip", text: readableLabel(workflow.status, WORKFLOW_STATUS_LABELS) }),
       el("span", { class: "muted", text: `${workflow.requirements.length} requirements` }),
     ]),
   ]));
   return shell(el("section", {}, [
-    el("h2", { text: "Workflows" }),
-    el("p", { class: "lede", text: "Commitments for this organization." }),
     errorMessage ? banner(errorMessage) : null,
+    el("h2", { text: "Needs attention" }),
+    attentionView(workflows),
+    el("h2", { class: "section-title", text: "Workflows" }),
+    el("p", { class: "lede", text: "Commitments for this organization." }),
     el("div", { class: "toolbar" }, [
       el("span", { class: "muted", text: workflows.length ? `${workflows.length} workflows` : "" }),
       el("a", { class: "button", href: "#/workflows/new", text: "New workflow" }),
@@ -373,21 +532,50 @@ function supportedStatusActions(requirement) {
   return actions;
 }
 
+function fact(label, value, valueClass = "") {
+  return el("div", { class: "fact" }, [
+    el("dt", { text: label }),
+    el("dd", { class: valueClass, text: value }),
+  ]);
+}
+
 function requirementCard(workflow, requirement) {
+  const pastDue = isPastDue(requirement, localCalendarDate());
+  const ownerName = requirement.owner?.name || "";
+  const ownerEmail = requirement.owner?.email || "";
+  const ownerText = [ownerName, ownerEmail].filter(Boolean).join(" · ");
+  const dueText = formatCalendarDate(requirement.due_date);
+  const provenance = provenanceLabel(requirement);
+  const recordedEvidence = Array.isArray(requirement.evidence) ? requirement.evidence : [];
   const card = el("article", { class: "card requirement" }, [
     el("h3", { text: requirement.title }),
-    el("p", { text: requirement.description }),
-    el("div", { class: "requirement-meta" }, [
-      el("span", { class: "chip", text: labelFor(requirement.status) }),
-      el("span", { class: "chip", text: labelFor(requirement.review_status) }),
-      el("span", { class: "muted", text: requirement.owner?.name || "Unassigned" }),
-      el("span", {
-        class: "muted",
-        text: requirement.owner?.email || "",
-      }),
-      el("span", { class: "muted", text: requirement.due_date || "No due date" }),
+    requirement.description ? el("p", { text: requirement.description }) : null,
+    el("dl", { class: "facts" }, [
+      fact("Review", readableLabel(requirement.review_status, REVIEW_LABELS) || "Not recorded"),
+      fact(
+        "Work",
+        readableLabel(requirement.status, WORK_LABELS) || "Not recorded",
+        requirement.status === "blocked" ? "is-blocked" : "",
+      ),
+      fact("Owner", ownerText || "Not recorded"),
+      fact("Due date", dueText || "Not recorded", pastDue ? "is-past-due" : ""),
+      fact("Evidence expected", requirement.evidence_expectation || "Not recorded"),
     ]),
-    el("p", { text: requirement.evidence_expectation }),
+    recordedEvidence.length
+      ? el("div", { class: "evidence-list" }, [
+          el("p", { class: "fact-label", text: "Evidence" }),
+          ...recordedEvidence.map((item) => el("p", {
+            text: item?.description || "Evidence recorded.",
+          })),
+        ])
+      : el("p", { text: "No evidence recorded." }),
+    provenance ? el("p", { class: "muted", text: provenance }) : null,
+    requirement.review_status === "pending_review"
+      ? el("p", {
+          class: "review-note",
+          text: "A person must approve this requirement before work can begin.",
+        })
+      : null,
   ]);
   const actions = supportedStatusActions(requirement);
   if (actions.length) {
@@ -558,10 +746,18 @@ function detailView(workflow) {
       ]);
   return shell(el("section", {}, [
     el("p", {}, [el("a", { href: "#/workflows", text: "Back to workflows" })]),
-    el("h2", { text: workflow.name }),
-    el("div", { class: "meta" }, [
-      el("span", { class: "chip", text: labelFor(workflow.workflow_type) }),
-      el("span", { class: "chip", text: labelFor(workflow.status) }),
+    el("div", { class: "workflow-identity" }, [
+      el("h2", { text: workflow.name }),
+      el("div", { class: "meta" }, [
+        el("span", {
+          class: "chip",
+          text: readableLabel(workflow.workflow_type, WORKFLOW_TYPE_LABELS),
+        }),
+        el("span", {
+          class: "chip",
+          text: readableLabel(workflow.status, WORKFLOW_STATUS_LABELS),
+        }),
+      ]),
     ]),
     el("h3", { text: "Requirements" }),
     requirements,

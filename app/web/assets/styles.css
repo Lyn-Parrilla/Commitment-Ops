@@ -98,6 +98,12 @@ a { color: var(--primary); }
 
 .page h2 { font-size: 2rem; margin-bottom: 0.35rem; }
 
+.section-title { margin-top: 2.25rem; }
+
+.workflow-identity { margin-bottom: 1.25rem; }
+
+.workflow-identity h2 { margin-bottom: 0.6rem; }
+
 .lede, .muted { color: var(--muted); }
 
 .sign-in {
@@ -204,6 +210,59 @@ input:focus, select:focus, textarea:focus {
   font-size: 0.82rem;
 }
 
+.reason-past-due, .is-past-due {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.is-past-due { background: transparent; font-weight: 600; }
+
+.reason-blocked, .is-blocked {
+  background: #f6f0e4;
+  color: #6d5420;
+}
+
+.is-blocked {
+  background: transparent;
+  font-weight: 600;
+}
+
+.reason-review {
+  background: #e7eef2;
+  color: var(--primary);
+}
+
+.facts {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.fact {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr;
+  gap: 0.35rem 0.75rem;
+  align-items: baseline;
+}
+
+.fact dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.fact dd { margin: 0; }
+
+.fact-label {
+  margin: 0.75rem 0 0.15rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.evidence-list p:last-child { margin-top: 0.15rem; }
+
+.review-note { margin-top: 0.75rem; }
+
 .banner {
   padding: 0.85rem 1rem;
   margin: 1rem 0;
@@ -235,4 +294,6 @@ input:focus, select:focus, textarea:focus {
   .page h2 { font-size: 1.6rem; }
 
   .button, .button-secondary, .org-select { width: 100%; }
+
+  .fact { grid-template-columns: 1fr; }
 }

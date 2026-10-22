@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 from uuid import UUID
 
@@ -36,7 +38,7 @@ def test_detail_page_adds_user_provided_requirements_and_status_actions() -> Non
     ).read_text()
 
     assert 'provenance: "user_provided"' in script
-    assert "ai_inferred" not in script
+    assert 'provenance: "ai_inferred"' not in script
     assert "review_status:" not in script
     assert "requirement.review_status" in script
     assert "/requirements/${requirement.id}/transitions" in script
@@ -51,6 +53,140 @@ def test_detail_page_adds_user_provided_requirements_and_status_actions() -> Non
     assert "submit.disabled = true" in script
     assert "button.disabled = true" in script
     assert "payload?.error?.details" in script
+
+
+def test_attention_rules_group_requirements_by_local_calendar_date() -> None:
+    source = (
+        Path(__file__).parents[2] / "app" / "web" / "assets" / "app.js"
+    ).read_text()
+    start = source.index("/* attention-rules */")
+    end = source.index("/* end-attention-rules */")
+    script = """
+const WORKFLOW_TYPES = [
+  ["grant", "Grant"],
+  ["compliance", "Compliance"],
+  ["vendor_contract", "Vendor contract"],
+  ["customer_implementation", "Customer implementation"],
+  ["regulatory_reporting", "Regulatory reporting"],
+  ["general", "General"],
+];
+""" + source[start:end] + """
+const today = { year: 2026, month: 10, day: 20 };
+const requirement = (fields) => ({
+  title: "Quarterly report",
+  status: "not_started",
+  review_status: "approved",
+  provenance: "user_provided",
+  owner: { name: "Ada Lovelace" },
+  due_date: "2026-12-01",
+  evidence: [],
+  ...fields,
+});
+const workflows = [
+  {
+    id: "workflow-1",
+    name: "Veteran housing grant",
+    requirements: [
+      requirement({ due_date: "2026-10-20" }),
+      requirement({ due_date: "2026-10-19", status: "in_progress" }),
+      requirement({ due_date: "2026-10-21" }),
+      requirement({ due_date: "2026-10-01", status: "completed" }),
+      requirement({ due_date: "2026-10-01", status: "cancelled" }),
+      requirement({
+        title: "Blocked intake",
+        status: "blocked",
+        review_status: "pending_review",
+        due_date: "2026-10-18",
+        provenance: "ai_inferred",
+      }),
+      requirement({
+        title: "Awaiting only",
+        review_status: "pending_review",
+        due_date: null,
+        owner: null,
+      }),
+      requirement({
+        title: "Blocked only",
+        status: "blocked",
+        due_date: "",
+        owner: {},
+      }),
+    ],
+  },
+  { name: "Missing id", requirements: [requirement({ status: "blocked" })] },
+];
+const items = attentionItems(workflows, today);
+const utcMidnight = new Date(Date.UTC(2026, 9, 20, 0, 30));
+process.stdout.write(JSON.stringify({
+  items,
+  localFromClock: localCalendarDate(utcMidnight),
+  localGetters: {
+    year: utcMidnight.getFullYear(),
+    month: utcMidnight.getMonth() + 1,
+    day: utcMidnight.getDate(),
+  },
+  parsed: parseCalendarDate("2026-10-20"),
+  dueToday: isPastDue(requirement({ due_date: "2026-10-20" }), today),
+  dueYesterday: isPastDue(requirement({ due_date: "2026-10-19" }), today),
+  labels: {
+    work: readableLabel("in_progress", WORK_LABELS),
+    review: readableLabel("pending_review", REVIEW_LABELS),
+    type: readableLabel("vendor_contract", WORKFLOW_TYPE_LABELS),
+    provenance: provenanceLabel(requirement({
+      provenance: "ai_inferred",
+      review_status: "pending_review",
+    })),
+    entered: provenanceLabel(requirement({ provenance: "user_provided" })),
+    absent: provenanceLabel(requirement({ provenance: "" })),
+  },
+  formatted: formatCalendarDate("2026-10-19"),
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    titles = [item["title"] for item in payload["items"]]
+
+    assert titles == [
+        "Quarterly report",
+        "Blocked intake",
+        "Awaiting only",
+        "Blocked only",
+    ]
+    assert payload["items"][0]["reasons"] == ["Past due"]
+    assert payload["items"][0]["ownerName"] == "Ada Lovelace"
+    assert payload["items"][0]["dueDate"] == "2026-10-19"
+    assert payload["items"][1]["reasons"] == [
+        "Past due",
+        "Blocked",
+        "Awaiting review",
+    ]
+    assert payload["items"][1]["workflowName"] == "Veteran housing grant"
+    assert payload["items"][2]["reasons"] == ["Awaiting review"]
+    assert payload["items"][2]["ownerName"] == ""
+    assert payload["items"][2]["dueDate"] == ""
+    assert payload["items"][3]["reasons"] == ["Blocked"]
+    assert payload["items"][3]["ownerName"] == ""
+    assert payload["dueToday"] is False
+    assert payload["dueYesterday"] is True
+    assert payload["parsed"] == {"year": 2026, "month": 10, "day": 20}
+    assert payload["localFromClock"] == payload["localGetters"]
+    assert payload["labels"] == {
+        "work": "In progress",
+        "review": "Awaiting review",
+        "type": "Vendor contract",
+        "provenance": "Suggested, awaiting approval",
+        "entered": "Entered by a person",
+        "absent": "",
+    }
+    assert "2026" in payload["formatted"]
+    assert "19" in payload["formatted"]
+    assert "18" not in payload["formatted"]
 
 
 def test_image_packages_the_browser_assets() -> None:
