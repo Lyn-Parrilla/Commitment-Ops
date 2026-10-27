@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from app.domain import (
     DomainValidationError,
@@ -34,6 +35,8 @@ def test_evidence_association(owner: Person) -> None:
     assert attached.reference == "grants/fy26/q3-narrative.pdf"
     assert attached.submitted_at == submitted_at
     assert attached.status == EvidenceStatus.SUBMITTED
+    assert attached.identity_verified is True
+    assert attached.submitter_name is None
 
 
 def test_cannot_attach_the_same_evidence_twice(owner: Person) -> None:
@@ -47,6 +50,31 @@ def test_cannot_attach_the_same_evidence_twice(owner: Person) -> None:
 
     with pytest.raises(DomainValidationError, match="already associated"):
         requirement.add_evidence(evidence)
+
+
+def test_public_evidence_is_unverified_and_has_no_person() -> None:
+    evidence = Evidence(
+        description="Synthetic receipt",
+        evidence_type=EvidenceType.LINK,
+        submitted_by=None,
+        reference="https://example.test/receipt",
+        submitter_name="Synthetic Submitter",
+        identity_verified=False,
+    )
+
+    assert evidence.submitted_by is None
+    assert evidence.identity_verified is False
+    assert evidence.submitter_name == "Synthetic Submitter"
+
+
+def test_verified_evidence_requires_a_person() -> None:
+    with pytest.raises(ValidationError):
+        Evidence(
+            description="Synthetic receipt",
+            evidence_type=EvidenceType.LINK,
+            submitted_by=None,
+            identity_verified=True,
+        )
 
 
 def test_cannot_attach_evidence_to_cancelled_requirement(owner: Person) -> None:

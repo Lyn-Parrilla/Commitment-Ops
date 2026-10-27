@@ -279,6 +279,7 @@ input:focus, select:focus, textarea:focus {
 .requirement p { margin: 0.2rem 0 0; }
 
 .org-select { min-width: 12rem; }
+.submission-url { overflow-wrap: anywhere; }
 
 @media (min-width: 721px) {
   .form-grid { grid-template-columns: 1fr 1fr; }

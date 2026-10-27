@@ -6,6 +6,8 @@ from app.application.exceptions import (
     LearningSignalNotFoundError,
     RequirementNotFoundError,
     ResourceNotFoundError,
+    SubmissionLinkNotFoundError,
+    SubmissionLinkUnavailableError,
     WorkflowNotFoundError,
 )
 from app.application.services import (
@@ -25,6 +27,8 @@ __all__ = [
     "RequirementReviewAction",
     "RequirementTransition",
     "ResourceNotFoundError",
+    "SubmissionLinkNotFoundError",
+    "SubmissionLinkUnavailableError",
     "WorkflowNotFoundError",
     "WorkflowService",
     "WorkflowTransition",

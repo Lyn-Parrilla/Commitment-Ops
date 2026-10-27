@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -701,6 +702,84 @@ def test_downgrade_refuses_populated_assistance_tables(
     assert stored_state == "proposed"
     assert event_count == 1
     assert "uq_workflows_id_organization_id" in constraints
+
+
+def test_submission_link_migration_preserves_verified_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'submission-links.db'}"
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "20261018_06")
+    workflow_id = uuid4()
+    requirement_id = uuid4()
+    person_id = uuid4()
+    evidence_id = uuid4()
+    _insert_legacy_requirement(
+        database_url,
+        workflow_id=workflow_id,
+        requirement_id=requirement_id,
+        person_id=person_id,
+    )
+    evidence = sa.table(
+        "evidence",
+        sa.column("id", sa.Uuid()),
+        sa.column("requirement_id", sa.Uuid()),
+        sa.column("description", sa.String()),
+        sa.column("evidence_type", sa.String()),
+        sa.column("submitted_by_id", sa.Uuid()),
+        sa.column("submitted_at", sa.DateTime()),
+        sa.column("status", sa.String()),
+    )
+    engine = create_database_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.insert(evidence).values(
+                id=evidence_id,
+                requirement_id=requirement_id,
+                description="Synthetic member note",
+                evidence_type="note",
+                submitted_by_id=person_id,
+                submitted_at=datetime.now(UTC),
+                status="submitted",
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
+    command.check(_bind_sqlite_url(config, database_url))
+    stored = sa.table(
+        "evidence",
+        sa.column("id", sa.Uuid()),
+        sa.column("submitted_by_id", sa.Uuid()),
+        sa.column("identity_verified", sa.Boolean()),
+        sa.column("submitter_name", sa.String()),
+    )
+    engine = create_database_engine(database_url)
+    with engine.connect() as connection:
+        row = connection.execute(
+            sa.select(
+                stored.c.submitted_by_id,
+                stored.c.identity_verified,
+                stored.c.submitter_name,
+            ).where(stored.c.id == evidence_id)
+        ).one()
+        tables = set(inspect(engine).get_table_names())
+        trigger = connection.scalar(
+            sa.text(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'trigger' "
+                "AND name = 'submission_links_keep_revocation'"
+            )
+        )
+    engine.dispose()
+    get_settings.cache_clear()
+
+    assert row.submitted_by_id == person_id
+    assert row.identity_verified in {True, 1}
+    assert row.submitter_name is None
+    assert "submission_links" in tables
+    assert trigger == "submission_links_keep_revocation"
 
 
 def _sqlite_alembic_config(

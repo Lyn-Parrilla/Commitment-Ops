@@ -53,6 +53,13 @@ def test_detail_page_adds_user_provided_requirements_and_status_actions() -> Non
     assert "submit.disabled = true" in script
     assert "button.disabled = true" in script
     assert "payload?.error?.details" in script
+    assert "Maximum 10 MB" in script
+    assert "Not scanned. Download is unavailable." in script
+    assert 'scan_status !== "clean"' in script
+    assert "storage_key" not in script
+    assert "X-Amz-" not in script
+    assert "malware-free" not in script
+    assert "email was sent" not in script
 
 
 def test_attention_rules_group_requirements_by_local_calendar_date() -> None:

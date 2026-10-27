@@ -14,6 +14,7 @@ from app.api.auth import (
 from app.application import WorkflowService
 from app.application.assistance import AssistanceService
 from app.application.discovery import DiscoveryService
+from app.application.submissions import SubmissionService
 from app.domain import Person
 from app.persistence import (
     AssistanceRepository,
@@ -25,6 +26,7 @@ from app.persistence import (
     create_database_engine,
     create_session_factory,
 )
+from app.persistence.submissions import SubmissionRepository
 
 
 @lru_cache
@@ -67,6 +69,21 @@ def get_assistance_repository() -> AssistanceRepository:
 
 def get_organization_repository() -> OrganizationRepository:
     return _organization_repository()
+
+
+@lru_cache
+def _submission_repository() -> SubmissionRepository:
+    from app.config import get_settings
+    from app.persistence.object_storage import configured_object_storage
+
+    return SubmissionRepository(
+        _session_factory(),
+        configured_object_storage(get_settings()),
+    )
+
+
+def get_submission_repository() -> SubmissionRepository:
+    return _submission_repository()
 
 
 def get_workflow_service(
@@ -163,6 +180,38 @@ def get_assistance_service(
     return AssistanceService(
         workflow_repository,
         assistance_repository,
+        organization_id=organization_id,
+        user_id=principal.user_id,
+    )
+
+
+def get_submission_service(
+    principal: Annotated[
+        AuthenticatedPrincipal,
+        Depends(get_authenticated_principal),
+    ],
+    organization_id: Annotated[UUID, Header(alias="X-Organization-ID")],
+    workflow_repository: Annotated[
+        WorkflowRepository,
+        Depends(get_workflow_repository),
+    ],
+    submission_repository: Annotated[
+        SubmissionRepository,
+        Depends(get_submission_repository),
+    ],
+    organization_repository: Annotated[
+        OrganizationRepository,
+        Depends(get_organization_repository),
+    ],
+) -> SubmissionService:
+    if not organization_repository.has_active_membership(
+        organization_id=organization_id,
+        user_id=principal.user_id,
+    ):
+        raise OrganizationAccessDeniedError
+    return SubmissionService(
+        workflow_repository,
+        submission_repository,
         organization_id=organization_id,
         user_id=principal.user_id,
     )

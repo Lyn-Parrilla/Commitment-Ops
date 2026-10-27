@@ -225,6 +225,27 @@ def test_postgresql_offline_migration_renders_without_application_url(
     assert "DROP SCHEMA" not in rendered.upper()
     assert "ALTER ROLE" not in rendered.upper()
     assert "Refusing to use existing role commitmentops_app" in rendered
+    assert 'CREATE SCHEMA "commitmentops_crypto"' in rendered
+    assert (
+        'CREATE EXTENSION pgcrypto SCHEMA "commitmentops_crypto"' in rendered
+    )
+    assert "CREATE EXTENSION IF NOT EXISTS pgcrypto" not in rendered
+    assert (
+        'GRANT UPDATE (status) ON "public"."workflows" '
+        "TO commitmentops_submission"
+    ) in rendered
+    assert (
+        'GRANT UPDATE (status) ON "public"."requirements" '
+        "TO commitmentops_submission"
+    ) in rendered
+    assert (
+        'GRANT UPDATE ON "public"."workflows" TO commitmentops_submission'
+        not in rendered
+    )
+    assert (
+        'GRANT UPDATE ON "public"."requirements" TO commitmentops_submission'
+        not in rendered
+    )
 
 
 def test_postgresql_model_ddl_uses_native_types() -> None:

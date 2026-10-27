@@ -10,10 +10,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "alembic>=1.14.0",
+    "boto3>=1.35.0",
     "fastapi>=0.115.0",
     "psycopg[binary]>=3.2.0",
     "pyjwt[crypto]>=2.10.0",
     "pydantic-settings>=2.6.0",
+    "python-multipart>=0.0.18",
     "sqlalchemy>=2.0.36",
     "uvicorn[standard]>=0.32.0",
 ]
@@ -33,4 +35,5 @@ pythonpath = ["."]
 filterwarnings = ["error"]
 markers = [
     "postgres: opt-in PostgreSQL integration tests; skipped unless TEST_DATABASE_URL is set",
+    "supabase_storage: opt-in Supabase Storage tests; skipped unless COMMITMENTOPS_STORAGE_INTEGRATION=1",
 ]

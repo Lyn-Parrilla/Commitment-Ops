@@ -12,6 +12,8 @@ from app.api.discovery import router as discovery_router
 from app.api.errors import register_error_handlers
 from app.api.health import router as health_router
 from app.api.organizations import router as organizations_router
+from app.api.redaction import install_submission_log_redaction
+from app.api.submissions import router as submissions_router
 from app.api.workflows import router as workflows_router
 from app.config import get_settings
 
@@ -34,11 +36,13 @@ def create_app() -> FastAPI:
         docs_url="/docs" if expose_docs else None,
         redoc_url="/redoc" if expose_docs else None,
     )
+    install_submission_log_redaction()
     register_error_handlers(application)
     application.include_router(health_router)
     application.include_router(client_config_router)
     application.include_router(organizations_router)
     application.include_router(workflows_router)
+    application.include_router(submissions_router)
     application.include_router(discovery_router)
     application.include_router(assistance_router)
     _install_web(application)

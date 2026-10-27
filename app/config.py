@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_api_base_url: str | None = None
 
+    evidence_storage_endpoint: str | None = None
+    evidence_storage_region: str | None = None
+    evidence_storage_bucket: str | None = None
+    evidence_storage_access_key_id: SecretStr | None = None
+    evidence_storage_secret_access_key: SecretStr | None = None
+    evidence_max_bytes: int = 10 * 1024 * 1024
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -20,7 +20,7 @@ from app.domain.enums import (
     WorkflowStatus,
     WorkflowType,
 )
-from app.domain.models import Evidence, Person, Requirement, Workflow
+from app.domain.models import Evidence, EvidenceFileMetadata, Person, Requirement, Workflow
 from app.persistence.database import SessionFactory, raise_persistence_failure
 from app.persistence.exceptions import InvalidAssociationError, PersistenceError
 from app.persistence.rls import privileged_session, tenant_session
@@ -457,10 +457,14 @@ class WorkflowRepository:
                 session.add(record)
             record.description = evidence.description
             record.evidence_type = evidence.evidence_type.value
-            record.submitted_by_id = evidence.submitted_by.id
+            record.submitted_by_id = (
+                evidence.submitted_by.id if evidence.submitted_by else None
+            )
             record.submitted_at = evidence.submitted_at
             record.reference = evidence.reference
             record.status = evidence.status.value
+            record.submitter_name = evidence.submitter_name
+            record.identity_verified = evidence.identity_verified
 
     def _validate_aggregate(self, workflow: Workflow) -> None:
         requirement_ids: set[UUID] = set()
@@ -651,6 +655,9 @@ def _to_domain(record: WorkflowRecord) -> Workflow:
                 submitted_at=evidence_record.submitted_at,
                 reference=evidence_record.reference,
                 status=EvidenceStatus(evidence_record.status),
+                submitter_name=evidence_record.submitter_name,
+                identity_verified=evidence_record.identity_verified,
+                file=_evidence_file(evidence_record),
             )
             for evidence_record in requirement_record.evidence
         ]
@@ -711,7 +718,11 @@ def _audit_snapshot(workflow: Workflow) -> dict[str, Any]:
                     {
                         "id": str(evidence.id),
                         "status": evidence.status.value,
-                        "submitted_by_id": str(evidence.submitted_by.id),
+                        "submitted_by_id": (
+                            str(evidence.submitted_by.id)
+                            if evidence.submitted_by
+                            else None
+                        ),
                     }
                     for evidence in requirement.evidence
                 ],
@@ -719,6 +730,21 @@ def _audit_snapshot(workflow: Workflow) -> dict[str, Any]:
             for requirement in workflow.requirements
         ],
     }
+
+
+def _evidence_file(evidence_record: object) -> EvidenceFileMetadata | None:
+    stored_file = getattr(evidence_record, "stored_file", None)
+    if stored_file is None:
+        return None
+    return EvidenceFileMetadata(
+        id=stored_file.id,
+        original_filename=stored_file.original_filename,
+        media_type=stored_file.media_type,
+        byte_size=stored_file.byte_size,
+        checksum_sha256=stored_file.checksum_sha256,
+        uploaded_at=stored_file.uploaded_at,
+        scan_status=stored_file.scan_status,
+    )
 
 
 def _clean_optional(value: str | None) -> str | None:

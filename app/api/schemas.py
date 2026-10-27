@@ -71,16 +71,33 @@ class PersonResponse(APIModel):
     role: str | None
 
 
+class EvidenceFileResponse(APIModel):
+    """Metadata a member may see. The storage key is omitted."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: UUID
+    original_filename: str
+    media_type: str
+    byte_size: int
+    checksum_sha256: str
+    uploaded_at: datetime
+    scan_status: str
+
+
 class EvidenceResponse(APIModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
     id: UUID
     description: str
     evidence_type: EvidenceType
-    submitted_by: PersonResponse
+    submitted_by: PersonResponse | None
     submitted_at: datetime
     reference: str | None
     status: EvidenceStatus
+    submitter_name: str | None = None
+    identity_verified: bool = True
+    file: EvidenceFileResponse | None = None
 
 
 class RequirementResponse(APIModel):

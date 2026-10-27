@@ -564,9 +564,10 @@ function requirementCard(workflow, requirement) {
     recordedEvidence.length
       ? el("div", { class: "evidence-list" }, [
           el("p", { class: "fact-label", text: "Evidence" }),
-          ...recordedEvidence.map((item) => el("p", {
-            text: item?.description || "Evidence recorded.",
-          })),
+          ...recordedEvidence.map((item) => el("div", {}, [
+            el("p", { text: evidenceSummary(item) }),
+            evidenceFileNote(workflow, requirement, item),
+          ])),
         ])
       : el("p", { text: "No evidence recorded." }),
     provenance ? el("p", { class: "muted", text: provenance }) : null,
@@ -584,6 +585,7 @@ function requirementCard(workflow, requirement) {
         class: "button-secondary",
         type: "button",
         text: label,
+        "data-requirement-action": "true",
       });
       button.addEventListener("click", () => {
         transitionRequirement(workflow, requirement, action, card);
@@ -591,11 +593,12 @@ function requirementCard(workflow, requirement) {
       return button;
     })));
   }
+  card.append(submissionControls(workflow, requirement));
   return card;
 }
 
 async function transitionRequirement(workflow, requirement, action, card) {
-  const buttons = [...card.querySelectorAll("button")];
+  const buttons = [...card.querySelectorAll("[data-requirement-action]")];
   for (const button of buttons) button.disabled = true;
   card.querySelector(".banner")?.remove();
   try {
@@ -797,9 +800,302 @@ async function signOut() {
   mount(signInView());
 }
 
+function evidenceSummary(item) {
+  const description = item?.description || "Evidence recorded.";
+  if (item?.identity_verified !== false) return description;
+  const name = item.submitter_name
+    ? `${item.submitter_name} (unverified)`
+    : "Unverified submitter";
+  return `${description} — ${name}`;
+}
+
+function evidenceFileNote(workflow, requirement, item) {
+  const file = item?.file;
+  if (!file) return null;
+  const kilobytes = Math.max(1, Math.round(Number(file.byte_size) / 1024));
+  const note = el("p", {
+    class: "muted",
+    text: `${file.original_filename} · ${kilobytes} KB.`,
+  });
+  if (file.scan_status !== "clean") {
+    return el("div", {}, [
+      note,
+      el("p", { class: "muted", text: "Not scanned. Download is unavailable." }),
+    ]);
+  }
+  const button = el("button", {
+    class: "button-secondary",
+    type: "button",
+    text: "Download",
+  });
+  button.addEventListener("click", async () => {
+    try {
+      await api(
+        `/api/v1/workflows/${workflow.id}/requirements/${requirement.id}/evidence/${item.id}/file`,
+      );
+      note.textContent = "This file is not available for download.";
+    } catch (error) {
+      note.textContent = error.message || "This file is not available for download.";
+    }
+  });
+  return el("div", {}, [note, button]);
+}
+
+function submissionControls(workflow, requirement) {
+  const closed = workflow.status === "cancelled" || requirement.status === "cancelled";
+  const holder = el("div", { class: "submission-links" });
+  if (!closed) {
+    const button = el("button", {
+      class: "button-secondary",
+      type: "button",
+      text: "Create submission link",
+    });
+    button.addEventListener("click", () => createSubmissionLink(
+      workflow,
+      requirement,
+      button,
+      holder,
+    ));
+    holder.append(el("div", { class: "requirement-actions" }, [button]));
+  }
+  loadSubmissionLinks(workflow, requirement, holder);
+  return holder;
+}
+
+async function createSubmissionLink(workflow, requirement, button, holder) {
+  button.disabled = true;
+  holder.querySelector(".banner")?.remove();
+  try {
+    const created = await api(
+      `/api/v1/workflows/${workflow.id}/requirements/${requirement.id}/submission-links`,
+      { method: "POST", organization: activeOrganization.id },
+    );
+    const issued = holder.querySelector(".issued-link");
+    if (issued) issued.remove();
+    const url = `${location.origin}${location.pathname}${created.submission_path}`;
+    const field = el("input", {
+      class: "submission-url",
+      readonly: "readonly",
+      value: url,
+      "aria-label": "Submission link",
+    });
+    holder.prepend(el("div", { class: "issued-link field" }, [
+      el("span", { text: "Copy this link now. It will not be shown again." }),
+      field,
+    ]));
+    field.focus();
+    field.select();
+    await loadSubmissionLinks(workflow, requirement, holder);
+  } catch (error) {
+    if (error.status === 401) return showExpired();
+    holder.prepend(banner(error.message));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function loadSubmissionLinks(workflow, requirement, holder) {
+  holder.querySelector(".link-list")?.remove();
+  try {
+    const links = await api(
+      `/api/v1/workflows/${workflow.id}/requirements/${requirement.id}/submission-links`,
+      { organization: activeOrganization.id },
+    );
+    if (!links.length) return;
+    const list = el("div", { class: "link-list stack" });
+    for (const link of links) {
+      const expires = new Date(link.expires_at).toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+      const state = link.revoked_at ? "Revoked" : `Used ${link.use_count} of ${link.max_uses}`;
+      const row = el("p", { class: "muted", text: `${state}. Expires ${expires}.` });
+      if (!link.revoked_at) {
+        const revoke = el("button", {
+          class: "button-secondary",
+          type: "button",
+          text: "Revoke link",
+        });
+        revoke.addEventListener("click", async () => {
+          revoke.disabled = true;
+          try {
+            await api(
+              `/api/v1/workflows/${workflow.id}/requirements/${requirement.id}/submission-links/${link.id}/revoke`,
+              { method: "POST", organization: activeOrganization.id },
+            );
+            await loadSubmissionLinks(workflow, requirement, holder);
+          } catch (error) {
+            if (error.status === 401) return showExpired();
+            revoke.disabled = false;
+            holder.prepend(banner(error.message));
+          }
+        });
+        list.append(el("div", {}, [row, revoke]));
+      } else {
+        list.append(row);
+      }
+    }
+    holder.append(list);
+  } catch (error) {
+    if (error.status === 401) return showExpired();
+    holder.append(banner(error.message));
+  }
+}
+
+async function publicApi(path, token, options = {}) {
+  const headers = {
+    Accept: "application/json",
+    "X-Submission-Token": token,
+  };
+  let body;
+  if (options.form) {
+    body = options.form;
+  } else if (options.body) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(options.body);
+  }
+  const response = await fetch(path, {
+    method: options.method || "GET",
+    headers,
+    body,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(messageFrom(payload, response.status));
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+function publicSubmissionView(token) {
+  applyBrand(DEFAULT_BRAND);
+  const section = el("section", { class: "card" }, [
+    el("h2", { text: "Submit evidence" }),
+    el("p", { class: "muted", text: "Loading the request…" }),
+  ]);
+  publicApi("/api/v1/submission-context", token)
+    .then((context) => mount(publicSubmissionForm(token, context)))
+    .catch((error) => {
+      section.replaceChildren(
+        el("h2", { text: "Submit evidence" }),
+        banner(error.message || "This submission link is not valid."),
+      );
+    });
+  return publicShell(section);
+}
+
+function publicSubmissionForm(token, context) {
+  const description = el("textarea", {
+    id: "submission-description",
+    required: "required",
+    maxlength: "4000",
+  });
+  const reference = el("input", {
+    id: "submission-reference",
+    type: "url",
+    maxlength: "1000",
+    placeholder: "https://",
+  });
+  const file = el("input", {
+    id: "submission-file",
+    type: "file",
+    accept: ".pdf,.docx,.xlsx,.csv,.png,.jpg,.jpeg",
+  });
+  const name = el("input", {
+    id: "submission-name",
+    maxlength: "200",
+  });
+  const submit = el("button", { class: "button", type: "submit", text: "Submit evidence" });
+  const form = el("form", { class: "card" }, [
+    el("p", { class: "eyebrow", text: context.organization_name }),
+    el("h2", { text: context.requirement_title }),
+    el("p", { text: context.evidence_expectation }),
+    el("label", { class: "field" }, [
+      el("span", { text: "What are you submitting?" }),
+      description,
+    ]),
+    el("label", { class: "field" }, [
+      el("span", { text: "File" }),
+      file,
+    ]),
+    el("p", {
+      class: "muted",
+      text: "PDF, DOCX, XLSX, CSV, PNG, or JPEG. Maximum 10 MB. Spreadsheet formulas and CSV values are stored as data and are not run.",
+    }),
+    el("label", { class: "field" }, [
+      el("span", { text: "HTTPS link" }),
+      reference,
+    ]),
+    el("label", { class: "field" }, [
+      el("span", { text: "Your name (optional)" }),
+      name,
+    ]),
+    el("p", {
+      class: "muted",
+      text: "Sending this records the evidence for review. It does not complete the requirement.",
+    }),
+    submit,
+  ]);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    form.querySelector(".banner")?.remove();
+    const selected = file.files && file.files[0];
+    const link = reference.value.trim();
+    if (!selected && !link) {
+      form.prepend(banner("Add a file or an HTTPS link."));
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = "Submitting…";
+    const formData = new FormData();
+    formData.append("description", description.value.trim());
+    if (link) formData.append("reference", link);
+    if (name.value.trim()) formData.append("submitter_name", name.value.trim());
+    if (selected) formData.append("file", selected);
+    try {
+      await publicApi("/api/v1/submissions", token, {
+        method: "POST",
+        form: formData,
+      });
+      description.value = "";
+      reference.value = "";
+      name.value = "";
+      file.value = "";
+      form.prepend(el("div", {
+        class: "banner",
+        role: "status",
+        dataset: { tone: "ok" },
+        text: "Submission received. It is recorded for review and does not complete the requirement.",
+      }));
+    } catch (error) {
+      form.prepend(banner(error.message));
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Submit evidence";
+    }
+  });
+  return publicShell(form);
+}
+
+function publicShell(content) {
+  return el("div", {}, [
+    el("header", { class: "app-header" }, [
+      el("div", { class: "brand" }, [
+        brandMark(DEFAULT_BRAND),
+        el("h1", { text: "CommitmentOps" }),
+      ]),
+    ]),
+    el("main", { class: "page" }, [content]),
+  ]);
+}
+
 function parseRoute() {
   const hash = location.hash.replace(/^#/, "") || "/workflows";
   const parts = hash.split("/").filter(Boolean);
+  if (parts[0] === "s" && parts[1]) return { name: "submit", token: decodeURIComponent(parts[1]) };
   if (parts[0] === "sign-in") return { name: "sign-in" };
   if (parts[0] === "workflows" && parts[1] === "new") return { name: "create" };
   if (parts[0] === "workflows" && parts[1]) return { name: "detail", id: parts[1] };
@@ -812,6 +1108,10 @@ function mount(view) {
 
 async function render() {
   const route = parseRoute();
+  if (route.name === "submit") {
+    mount(publicSubmissionView(route.token));
+    return;
+  }
   if (!(await ensureSession()) || route.name === "sign-in") {
     mount(signInView());
     return;

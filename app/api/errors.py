@@ -12,6 +12,7 @@ from app.api.auth import (
 )
 from app.api.schemas import ErrorDetail, ErrorResponse, validation_issues
 from app.application import ResourceNotFoundError
+from app.application.exceptions import EvidenceFileUnavailableError
 from app.domain import DomainValidationError, InvalidTransitionError
 from app.persistence import InvalidAssociationError, PersistenceError
 
@@ -63,6 +64,17 @@ def register_error_handlers(application: FastAPI) -> None:
             code="request_validation_error",
             message="Request validation failed",
             details=validation_issues(exc.errors()),
+        )
+
+    @application.exception_handler(EvidenceFileUnavailableError)
+    async def evidence_file_unavailable_handler(
+        _: Request,
+        exc: EvidenceFileUnavailableError,
+    ) -> JSONResponse:
+        return _response(
+            409,
+            code="evidence_file_unavailable",
+            message=str(exc),
         )
 
     @application.exception_handler(ResourceNotFoundError)

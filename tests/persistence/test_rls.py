@@ -50,6 +50,7 @@ from tests.persistence.postgres_support import (
     assert_postgres_test_url,
     clear_isolated_tables,
     drop_isolated_schema,
+    EXPECTED_ALEMBIC_HEAD,
     explicit_test_database_url,
     isolated_postgres_engine,
     new_test_schema,
@@ -109,7 +110,8 @@ def test_application_role_is_subject_to_forced_rls(postgres_engine) -> None:
                   AND pg_class.relname IN (
                     'organizations', 'organization_memberships', 'people',
                     'workflows', 'requirements', 'evidence', 'audit_events',
-                    'assistance_proposals', 'assistance_proposal_events'
+                    'assistance_proposals', 'assistance_proposal_events',
+                    'submission_links'
                   )
                   AND pg_class.relrowsecurity
                   AND pg_class.relforcerowsecurity
@@ -127,7 +129,7 @@ def test_application_role_is_subject_to_forced_rls(postgres_engine) -> None:
     assert can_create_role is False
     assert can_create_db is False
     assert can_login is False
-    assert forced == 9
+    assert forced == 10
 
 
 def test_cross_tenant_statements_fail_closed(postgres_engine) -> None:
@@ -597,7 +599,7 @@ def test_postgresql_downgrade_keeps_deferred_person_foreign_keys() -> None:
                 ),
                 {"id": person_id},
             )
-        assert version == "20261018_06"
+        assert version == EXPECTED_ALEMBIC_HEAD
         assert deferred is True
         assert policy == 1
     finally:

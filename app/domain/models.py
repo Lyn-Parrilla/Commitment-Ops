@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.enums import (
     EvidenceStatus,
@@ -56,18 +56,49 @@ class Person(BaseModel):
         return cls(name=_require_text(name, "name"), email=_require_email(email), role=cleaned_role)
 
 
+class EvidenceFileMetadata(BaseModel):
+    """Metadata for one private evidence file. The storage key stays server-side."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: UUID
+    original_filename: str
+    media_type: str
+    byte_size: int
+    checksum_sha256: str
+    uploaded_at: datetime
+    scan_status: str
+
+
 class Evidence(BaseModel):
-    """Proof offered against a requirement. Storage and files are out of scope."""
+    """Proof offered against a requirement.
+
+    A verified submission names a person. A public submission leaves that
+    person empty, keeps the server timestamp, and may store an unverified
+    display name. File bytes stay in private object storage.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     id: UUID = Field(default_factory=uuid4)
     description: str
     evidence_type: EvidenceType
-    submitted_by: Person
+    submitted_by: Person | None = None
     submitted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     reference: str | None = None
     status: EvidenceStatus = EvidenceStatus.SUBMITTED
+    submitter_name: str | None = None
+    identity_verified: bool = True
+    file: EvidenceFileMetadata | None = None
+
+    @model_validator(mode="after")
+    def match_submitter_identity(self) -> Evidence:
+        has_person = self.submitted_by is not None
+        if self.identity_verified != has_person:
+            raise ValueError(
+                "evidence submitter identity does not match its verification"
+            )
+        return self
 
     @classmethod
     def create(
@@ -86,6 +117,7 @@ class Evidence(BaseModel):
             submitted_by=submitted_by,
             reference=cleaned_reference,
             submitted_at=submitted_at or datetime.now(UTC),
+            identity_verified=True,
         )
 
 

@@ -36,6 +36,7 @@ from app.persistence.orm import OrganizationRecord
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
 _TABLE_NAME = re.compile(r"^[a-z_]+$")
 LEGACY_ORGANIZATION_ID = UUID("00000000-0000-0000-0000-000000000001")
+EXPECTED_ALEMBIC_HEAD = "20261023_08"
 SKIP_REASON = (
     "PostgreSQL integration tests were skipped because TEST_DATABASE_URL is "
     "not set. Export that variable, or set only that key in the untracked "
@@ -384,7 +385,7 @@ def _assert_migrated(engine: Engine, schema: str) -> None:
                 "PostgreSQL connection is not using the isolated test schema"
             )
         version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        if version != "20261018_06":
+        if version != EXPECTED_ALEMBIC_HEAD:
             raise UnsafeTestDatabase(
                 "isolated schema did not migrate to the expected Alembic head"
             )

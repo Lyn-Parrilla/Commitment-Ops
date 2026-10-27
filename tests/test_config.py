@@ -31,6 +31,12 @@ def test_settings_load_without_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
         "SUPABASE_SERVICE_ROLE_KEY",
         "LLM_API_KEY",
         "LLM_API_BASE_URL",
+        "EVIDENCE_STORAGE_ENDPOINT",
+        "EVIDENCE_STORAGE_REGION",
+        "EVIDENCE_STORAGE_BUCKET",
+        "EVIDENCE_STORAGE_ACCESS_KEY_ID",
+        "EVIDENCE_STORAGE_SECRET_ACCESS_KEY",
+        "EVIDENCE_MAX_BYTES",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -45,6 +51,12 @@ def test_settings_load_without_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.supabase_service_role_key is None
     assert settings.llm_api_key is None
     assert settings.llm_api_base_url is None
+    assert settings.evidence_storage_endpoint is None
+    assert settings.evidence_storage_region is None
+    assert settings.evidence_storage_bucket is None
+    assert settings.evidence_storage_access_key_id is None
+    assert settings.evidence_storage_secret_access_key is None
+    assert settings.evidence_max_bytes == 10 * 1024 * 1024
 
 
 def test_settings_read_environment_overrides(monkeypatch) -> None:

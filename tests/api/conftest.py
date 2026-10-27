@@ -14,6 +14,7 @@ from app.api.dependencies import (
     get_assistance_repository,
     get_discovery_repository,
     get_organization_repository,
+    get_submission_repository,
     get_workflow_repository,
 )
 from app.config import get_settings
@@ -30,6 +31,8 @@ from app.persistence import (
     create_database_engine,
     create_session_factory,
 )
+from app.persistence.object_storage import FakeObjectStorage
+from app.persistence.submissions import SubmissionRepository
 
 TEST_ISSUER = "https://auth.example.test/auth/v1"
 TEST_AUDIENCE = "authenticated"
@@ -172,6 +175,10 @@ def api_client(
     application.dependency_overrides[get_assistance_repository] = (
         lambda: AssistanceRepository(api_session_factory)
     )
+    evidence_storage = FakeObjectStorage()
+    application.dependency_overrides[get_submission_repository] = (
+        lambda: SubmissionRepository(api_session_factory, evidence_storage)
+    )
     application.dependency_overrides[get_jwt_verifier] = lambda: verifier
 
     with TestClient(application) as client:
@@ -181,6 +188,7 @@ def api_client(
                 "X-Organization-ID": str(TEST_ORGANIZATION_ID),
             }
         )
+        client.evidence_storage = evidence_storage
         yield client
 
     application.dependency_overrides.clear()

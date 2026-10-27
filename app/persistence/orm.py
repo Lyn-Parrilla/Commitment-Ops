@@ -16,14 +16,17 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Float,
     Index,
+    Integer,
     String,
     Text,
     TypeDecorator,
     UniqueConstraint,
     Uuid,
+    event,
     text,
     true,
 )
+from sqlalchemy.schema import DDL
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.assistance import (
@@ -251,6 +254,11 @@ class EvidenceRecord(Base):
             f"status IN ({_allowed_values(EvidenceStatus)})",
             name="ck_evidence_status",
         ),
+        CheckConstraint(
+            "(identity_verified = true AND submitted_by_id IS NOT NULL) "
+            "OR (identity_verified = false AND submitted_by_id IS NULL)",
+            name="ck_evidence_submitter_identity",
+        ),
         Index("ix_evidence_requirement", "requirement_id"),
     )
 
@@ -262,7 +270,7 @@ class EvidenceRecord(Base):
     )
     description: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_type: Mapped[str] = mapped_column(String(30), nullable=False)
-    submitted_by_id: Mapped[UUID] = mapped_column(
+    submitted_by_id: Mapped[UUID | None] = mapped_column(
         Uuid,
         ForeignKey(
             "people.id",
@@ -270,18 +278,226 @@ class EvidenceRecord(Base):
             deferrable=True,
             initially="DEFERRED",
         ),
-        nullable=False,
     )
     submitted_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     reference: Mapped[str | None] = mapped_column(String(1000))
     status: Mapped[str] = mapped_column(String(30), nullable=False)
+    submitter_name: Mapped[str | None] = mapped_column(String(200))
+    identity_verified: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+    )
 
     requirement: Mapped[RequirementRecord] = relationship(
         back_populates="evidence"
     )
-    submitted_by: Mapped[PersonRecord] = relationship(
+    submitted_by: Mapped[PersonRecord | None] = relationship(
         foreign_keys=[submitted_by_id]
     )
+    stored_file: Mapped[EvidenceFileRecord | None] = relationship(
+        back_populates="evidence",
+        uselist=False,
+    )
+
+
+_STORAGE_KEY_CHECK = (
+    "length(storage_key) = 106 "
+    "AND storage_key NOT LIKE '%..%' "
+    "AND storage_key NOT LIKE '/%'"
+)
+
+
+class EvidenceFileRecord(Base):
+    """Private file metadata. Bytes live in object storage, not in this row."""
+
+    __tablename__ = "evidence_files"
+    __table_args__ = (
+        UniqueConstraint("evidence_id", name="uq_evidence_files_evidence_id"),
+        UniqueConstraint("storage_key", name="uq_evidence_files_storage_key"),
+        CheckConstraint(
+            "byte_size >= 1 AND byte_size <= 10485760",
+            name="ck_evidence_files_byte_size",
+        ),
+        CheckConstraint(
+            "length(checksum_sha256) = 64",
+            name="ck_evidence_files_checksum",
+        ),
+        CheckConstraint(
+            "scan_status = 'unscanned'",
+            name="ck_evidence_files_scan_status",
+        ),
+        CheckConstraint(
+            "length(original_filename) BETWEEN 1 AND 200",
+            name="ck_evidence_files_filename",
+        ),
+        CheckConstraint(_STORAGE_KEY_CHECK, name="ck_evidence_files_storage_key"),
+        Index("ix_evidence_files_organization", "organization_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    evidence_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "evidence.id",
+            name="fk_evidence_files_evidence_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "organizations.id",
+            name="fk_evidence_files_organization_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    storage_key: Mapped[str] = mapped_column(
+        String(200),
+        nullable=False,
+        deferred=True,
+    )
+    original_filename: Mapped[str] = mapped_column(String(200), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    scan_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="unscanned",
+        server_default=text("'unscanned'"),
+    )
+    evidence: Mapped[EvidenceRecord] = relationship(back_populates="stored_file")
+
+
+class EvidenceFileReservationRecord(Base):
+    """In-progress upload. Cleanup will not remove its object while it is active."""
+
+    __tablename__ = "evidence_file_reservations"
+    __table_args__ = (
+        CheckConstraint(
+            _STORAGE_KEY_CHECK,
+            name="ck_evidence_file_reservations_storage_key",
+        ),
+    )
+
+    storage_key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    evidence_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    reserved_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class EvidenceStorageCleanupRecord(Base):
+    """Exact key whose object delete must be retried. Age alone is not enough."""
+
+    __tablename__ = "evidence_storage_cleanup"
+    __table_args__ = (
+        CheckConstraint(
+            _STORAGE_KEY_CHECK,
+            name="ck_evidence_storage_cleanup_storage_key",
+        ),
+    )
+
+    storage_key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    claim_token: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+
+
+class SubmissionLinkRecord(Base):
+    """Revocable hashed credential for one requirement's public submissions."""
+
+    __tablename__ = "submission_links"
+    __table_args__ = (
+        CheckConstraint(
+            "length(token_hash) = 64",
+            name="ck_submission_links_token_hash",
+        ),
+        CheckConstraint(
+            "use_count >= 0",
+            name="ck_submission_links_use_count",
+        ),
+        CheckConstraint(
+            "max_uses >= 1",
+            name="ck_submission_links_max_uses",
+        ),
+        CheckConstraint(
+            "use_count <= max_uses",
+            name="ck_submission_links_use_limit",
+        ),
+        ForeignKeyConstraint(
+            ["workflow_id", "organization_id"],
+            ["workflows.id", "workflows.organization_id"],
+            name="fk_submission_links_workflow_organization",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["requirement_id", "workflow_id"],
+            ["requirements.id", "requirements.workflow_id"],
+            name="fk_submission_links_requirement_workflow",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "token_hash",
+            name="uq_submission_links_token_hash",
+        ),
+        Index(
+            "ix_submission_links_requirement",
+            "organization_id",
+            "workflow_id",
+            "requirement_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "organizations.id",
+            name="fk_submission_links_organization_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    workflow_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    requirement_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_by_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    max_uses: Mapped[int] = mapped_column(Integer, nullable=False)
+    use_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+event.listen(
+    SubmissionLinkRecord.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER submission_links_keep_revocation
+        BEFORE UPDATE ON submission_links
+        FOR EACH ROW
+        WHEN OLD.revoked_at IS NOT NULL
+         AND NEW.revoked_at IS NOT OLD.revoked_at
+        BEGIN
+            SELECT RAISE(ABORT, 'submission link revocation is permanent');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
 
 
 class AuditEventRecord(Base):
