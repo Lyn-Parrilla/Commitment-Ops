@@ -3,7 +3,6 @@ from uuid import UUID, uuid4
 from alembic import command
 import pytest
 from sqlalchemy import text
-from sqlalchemy.engine import URL, make_url
 
 from app.persistence import (
     Organization,
@@ -20,15 +19,20 @@ from tests.persistence.postgres_support import (
     SKIP_REASON,
     alembic_config,
     clear_isolated_tables,
+    assign_test_role_password,
+    create_test_login,
     explicit_test_database_url,
+    new_test_password,
     isolated_postgres_engine,
     require_test_target,
+    temporary_role_url,
 )
 
 pytestmark = pytest.mark.postgres
 
 MEMBER_ID = UUID("20000000-0000-0000-0000-000000000009")
 REQUEST_LOGIN = "commitmentops_request"
+_REQUEST_PASSWORD: str | None = None
 
 
 def _authorize(admin: OrganizationAdmin, organization_id: UUID) -> None:
@@ -311,18 +315,13 @@ def test_downgrade_is_refused_for_an_organization_without_children(
 
 
 def _request_login_url(url: str) -> str:
-    parsed = make_url(url)
-    return URL.create(
-        drivername=parsed.drivername,
-        username=REQUEST_LOGIN,
-        password=None,
-        host=parsed.host,
-        port=parsed.port,
-        database=parsed.database,
-    ).render_as_string(hide_password=False)
+    if _REQUEST_PASSWORD is None:
+        raise AssertionError("test login has no password")
+    return temporary_role_url(url, REQUEST_LOGIN, _REQUEST_PASSWORD)
 
 
 def _ensure_request_login(engine, schema: str) -> None:
+    global _REQUEST_PASSWORD
     quoted = quoted_isolated_schema(schema)
     with engine.begin() as connection:
         existing = connection.execute(
@@ -336,19 +335,24 @@ def _ensure_request_login(engine, schema: str) -> None:
             {"role": REQUEST_LOGIN},
         ).one_or_none()
         if existing is None:
-            connection.execute(
-                text(
-                    f"CREATE ROLE {REQUEST_LOGIN} "
-                    "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT"
-                )
+            _REQUEST_PASSWORD = create_test_login(
+                connection,
+                REQUEST_LOGIN,
+                "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT",
             )
         elif tuple(existing) != (False, False, False, False, True):
             raise AssertionError("request login has unexpected privileges")
+        else:
+            _REQUEST_PASSWORD = new_test_password()
+            assign_test_role_password(
+                connection, REQUEST_LOGIN, _REQUEST_PASSWORD
+            )
         connection.execute(text(f"GRANT {APP_ROLE} TO {REQUEST_LOGIN}"))
         connection.execute(text(f"GRANT USAGE ON SCHEMA {quoted} TO {REQUEST_LOGIN}"))
 
 
 def _drop_request_login(engine, schema: str) -> None:
+    global _REQUEST_PASSWORD
     quoted = quoted_isolated_schema(schema)
     with engine.begin() as connection:
         exists = connection.scalar(
@@ -356,6 +360,7 @@ def _drop_request_login(engine, schema: str) -> None:
             {"role": REQUEST_LOGIN},
         )
         if not exists:
+            _REQUEST_PASSWORD = None
             return
         member = connection.scalar(
             text("SELECT pg_has_role(:role, :app_role, 'MEMBER')"),
@@ -365,3 +370,4 @@ def _drop_request_login(engine, schema: str) -> None:
             connection.execute(text(f"REVOKE {APP_ROLE} FROM {REQUEST_LOGIN}"))
         connection.execute(text(f"REVOKE ALL ON SCHEMA {quoted} FROM {REQUEST_LOGIN}"))
         connection.execute(text(f"DROP ROLE {REQUEST_LOGIN}"))
+        _REQUEST_PASSWORD = None

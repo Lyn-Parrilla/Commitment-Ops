@@ -12,6 +12,16 @@ from app.config import get_settings
 from app.persistence import create_database_engine
 
 
+def _assert_version(database_url: str, expected: str) -> None:
+    engine = create_database_engine(database_url)
+    with engine.connect() as connection:
+        version = connection.scalar(
+            sa.text("SELECT version_num FROM alembic_version")
+        )
+    engine.dispose()
+    assert version == expected
+
+
 def test_docker_build_context_packages_migration_runtime_files() -> None:
     repository_root = Path(__file__).parents[2]
     dockerfile = (repository_root / "Dockerfile").read_text()
@@ -267,6 +277,9 @@ def test_downgrade_refuses_non_legacy_tenant_assignments(
 
     engine = create_database_engine(database_url)
     with engine.connect() as connection:
+        version = connection.scalar(
+            sa.text("SELECT version_num FROM alembic_version")
+        )
         stored_organization_id = connection.scalar(
             sa.select(workflows.c.organization_id).where(
                 workflows.c.id == workflow_id
@@ -275,6 +288,7 @@ def test_downgrade_refuses_non_legacy_tenant_assignments(
     engine.dispose()
     get_settings.cache_clear()
 
+    assert version == "20261028_10"
     assert stored_organization_id == organization_id
 
 
@@ -308,6 +322,9 @@ def test_downgrade_refuses_nonlegacy_organization_without_children(
 
     engine = create_database_engine(database_url)
     with engine.connect() as connection:
+        version = connection.scalar(
+            sa.text("SELECT version_num FROM alembic_version")
+        )
         stored_name = connection.scalar(
             sa.select(organizations.c.name).where(
                 organizations.c.id == organization_id
@@ -317,9 +334,60 @@ def test_downgrade_refuses_nonlegacy_organization_without_children(
     engine.dispose()
     get_settings.cache_clear()
 
+    assert version == "20261028_10"
     assert stored_name == "Synthetic Empty Tenant"
     assert "organizations" in tables
     assert "organization_memberships" in tables
+
+
+def test_sqlite_downgrade_stamp_follows_only_completed_revisions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'privilege-stamp.db'}"
+    config = _sqlite_alembic_config(database_url, monkeypatch)
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
+
+    organization_id = uuid4()
+    organizations = sa.table(
+        "organizations",
+        sa.column("id", sa.Uuid()),
+        sa.column("name", sa.String()),
+    )
+    engine = create_database_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.insert(organizations).values(
+                id=organization_id,
+                name="Synthetic Empty Tenant",
+            )
+        )
+    engine.dispose()
+
+    command.downgrade(_bind_sqlite_url(config, database_url), "-1")
+    _assert_version(database_url, "20261027_09")
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
+
+    command.downgrade(_bind_sqlite_url(config, database_url), "20261027_09")
+    _assert_version(database_url, "20261027_09")
+    command.upgrade(_bind_sqlite_url(config, database_url), "head")
+
+    with pytest.raises(Exception, match="Refusing to downgrade"):
+        command.downgrade(_bind_sqlite_url(config, database_url), "-2")
+    _assert_version(database_url, "20261028_10")
+    command.check(_bind_sqlite_url(config, database_url))
+
+    engine = create_database_engine(database_url)
+    with engine.connect() as connection:
+        stored_name = connection.scalar(
+            sa.select(organizations.c.name).where(
+                organizations.c.id == organization_id
+            )
+        )
+    engine.dispose()
+    get_settings.cache_clear()
+
+    assert stored_name == "Synthetic Empty Tenant"
 
 
 def test_renamed_placeholder_does_not_hide_a_nonlegacy_organization(

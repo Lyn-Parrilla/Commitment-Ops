@@ -18,7 +18,7 @@ from app.domain import (
 from alembic import command
 import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
@@ -51,10 +51,12 @@ from tests.persistence.postgres_support import (
     clear_isolated_tables,
     drop_isolated_schema,
     EXPECTED_ALEMBIC_HEAD,
+    create_test_login,
     explicit_test_database_url,
     isolated_postgres_engine,
     new_test_schema,
     require_test_target,
+    temporary_role_url,
 )
 
 pytestmark = pytest.mark.postgres
@@ -1414,6 +1416,7 @@ INHERIT_BYPASS = "commitmentops_inherit_bypass"
 OWNER_MEMBER = "commitmentops_owner_member"
 OWNER_MID = "commitmentops_owner_mid"
 OWNER_GROUP = "commitmentops_owner_group"
+_ROLE_PASSWORDS: dict[str, str] = {}
 _MANAGED_ROLES = frozenset(
     {
         RUNTIME_LOGIN,
@@ -1462,15 +1465,10 @@ def _admin_engine(url: str):
 def _role_url(url: str, role: str) -> str:
     if role not in _MANAGED_ROLES:
         raise AssertionError("unexpected role")
-    parsed = make_url(url)
-    return URL.create(
-        drivername=parsed.drivername,
-        username=role,
-        password=None,
-        host=parsed.host,
-        port=parsed.port,
-        database=parsed.database,
-    ).render_as_string(hide_password=False)
+    password = _ROLE_PASSWORDS.get(role)
+    if password is None:
+        raise AssertionError("test login has no password")
+    return temporary_role_url(url, role, password)
 
 
 def _messages(exc: BaseException) -> str:
@@ -1581,7 +1579,11 @@ def _ensure_role(admin, name: str, attributes: str) -> None:
         raise AssertionError("unexpected role")
     _drop_managed_role(admin, name)
     with admin.begin() as connection:
-        connection.execute(text(f"CREATE ROLE {name} {attributes}"))
+        password = create_test_login(connection, name, attributes)
+    if password is None:
+        _ROLE_PASSWORDS.pop(name, None)
+    else:
+        _ROLE_PASSWORDS[name] = password
 
 
 def _drop_managed_role(admin, name: str) -> None:
@@ -1596,6 +1598,7 @@ def _drop_managed_role(admin, name: str) -> None:
         )
         if exists:
             connection.execute(text(f"DROP ROLE {name}"))
+            _ROLE_PASSWORDS.pop(name, None)
 
 
 def _swap_in_unsafe_application_role(admin) -> None:

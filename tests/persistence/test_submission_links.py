@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -9,7 +10,6 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.persistence.database import quoted_isolated_schema
@@ -38,9 +38,11 @@ from app.persistence import (
 from app.persistence.submissions import SubmissionRepository
 from tests.persistence.postgres_support import (
     SKIP_REASON,
+    create_test_login,
     explicit_test_database_url,
     isolated_postgres_engine,
     require_test_target,
+    temporary_role_url,
 )
 
 
@@ -1091,11 +1093,12 @@ def test_cleanup_claim_blocks_a_concurrent_reservation() -> None:
                 },
             )
 
-        def delete_after_reserve_fails(storage_key: str) -> None:
+        def delete_after_reserve_waits(storage_key: str) -> None:
             with engine.connect() as connection:
                 with connection.begin():
+                    connection.execute(text("SET LOCAL lock_timeout = '1s'"))
                     _enter_public(connection)
-                    with pytest.raises(SQLAlchemyError, match="invalid submission"):
+                    with pytest.raises(SQLAlchemyError, match="lock timeout"):
                         connection.execute(
                             text(
                                 """
@@ -1113,7 +1116,7 @@ def test_cleanup_claim_blocks_a_concurrent_reservation() -> None:
             removed.append(storage_key)
             storage._objects.pop(storage_key, None)
 
-        storage.delete = delete_after_reserve_fails
+        storage.delete = delete_after_reserve_waits
         repository = SubmissionRepository(
             create_session_factory(engine),
             storage,
@@ -1227,29 +1230,262 @@ def test_cleanup_claim_blocks_a_concurrent_reservation() -> None:
             transaction.rollback()
 
 
+@pytest.mark.postgres
+def test_storage_cleanup_follows_the_owning_reservation() -> None:
+    url = explicit_test_database_url()
+    if url is None:
+        pytest.skip(SKIP_REASON)
+    with isolated_postgres_engine(url) as engine:
+        token_a = generate_submission_token()
+        token_b = generate_submission_token()
+        seeded_a = _seed_postgres_link(engine, token_a, max_uses=4)
+        seeded_b = _seed_postgres_link(engine, token_b, max_uses=4)
+        owned_evidence = uuid4()
+        owned_key = build_storage_key(
+            str(seeded_a["organization_id"]),
+            str(owned_evidence),
+            secrets.token_hex(16),
+        )
+        foreign_evidence = uuid4()
+        foreign_key = build_storage_key(
+            str(seeded_b["organization_id"]),
+            str(foreign_evidence),
+            secrets.token_hex(16),
+        )
+        guessed_key = build_storage_key(
+            str(seeded_a["organization_id"]),
+            str(uuid4()),
+            secrets.token_hex(16),
+        )
+        referenced_evidence = uuid4()
+        referenced_key = build_storage_key(
+            str(seeded_a["organization_id"]),
+            str(referenced_evidence),
+            secrets.token_hex(16),
+        )
+        _reserve_as_app(engine, token_a, owned_evidence, owned_key)
+        _reserve_as_app(engine, token_b, foreign_evidence, foreign_key)
+        _reserve_as_app(engine, token_a, referenced_evidence, referenced_key)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO evidence (
+                        id, requirement_id, description, evidence_type,
+                        submitted_by_id, submitted_at, reference, status,
+                        submitter_name, identity_verified
+                    )
+                    VALUES (
+                        :id, :requirement_id, 'Synthetic file', 'document',
+                        NULL, :submitted_at, NULL, 'submitted', NULL, false
+                    )
+                    """
+                ),
+                {
+                    "id": referenced_evidence,
+                    "requirement_id": seeded_a["requirement_id"],
+                    "submitted_at": datetime.now(UTC),
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO evidence_files (
+                        id, evidence_id, organization_id, storage_key,
+                        original_filename, media_type, byte_size,
+                        checksum_sha256, uploaded_at, scan_status
+                    )
+                    VALUES (
+                        :id, :evidence_id, :organization_id, :storage_key,
+                        'notes.pdf', 'application/pdf', 8,
+                        :checksum, :uploaded_at, 'unscanned'
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "evidence_id": referenced_evidence,
+                    "organization_id": seeded_a["organization_id"],
+                    "storage_key": referenced_key,
+                    "checksum": "ab" * 32,
+                    "uploaded_at": datetime.now(UTC),
+                },
+            )
+
+        _call_storage_function(
+            engine, "record_evidence_storage_failure", token_a, owned_key
+        )
+        with engine.begin() as connection:
+            recorded = connection.execute(
+                text(
+                    """
+                    SELECT organization_id
+                    FROM evidence_storage_cleanup
+                    WHERE storage_key = :storage_key
+                    """
+                ),
+                {"storage_key": owned_key},
+            ).one()
+            reservation = connection.scalar(
+                text(
+                    """
+                    SELECT organization_id
+                    FROM evidence_file_reservations
+                    WHERE storage_key = :storage_key
+                    """
+                ),
+                {"storage_key": owned_key},
+            )
+        assert recorded.organization_id == seeded_a["organization_id"]
+        assert reservation == seeded_a["organization_id"]
+
+        _call_storage_function(
+            engine,
+            "release_evidence_object_reservation",
+            token_a,
+            owned_key,
+        )
+        with engine.begin() as connection:
+            released = connection.scalar(
+                text(
+                    """
+                    SELECT 1
+                    FROM evidence_file_reservations
+                    WHERE storage_key = :storage_key
+                    """
+                ),
+                {"storage_key": owned_key},
+            )
+            kept = connection.scalar(
+                text(
+                    """
+                    SELECT organization_id
+                    FROM evidence_file_reservations
+                    WHERE storage_key = :storage_key
+                    """
+                ),
+                {"storage_key": foreign_key},
+            )
+        assert released is None
+        assert kept == seeded_b["organization_id"]
+
+        for function_name, token, key in (
+            ("record_evidence_storage_failure", token_a, foreign_key),
+            ("release_evidence_object_reservation", token_a, foreign_key),
+            ("record_evidence_storage_failure", token_a, guessed_key),
+            ("release_evidence_object_reservation", token_a, guessed_key),
+            ("record_evidence_storage_failure", "not-a-submission-token", owned_key),
+            (
+                "release_evidence_object_reservation",
+                "not-a-submission-token",
+                foreign_key,
+            ),
+            ("record_evidence_storage_failure", token_a, referenced_key),
+            ("release_evidence_object_reservation", token_a, referenced_key),
+        ):
+            _refuse_storage_function(engine, function_name, token, key)
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    DELETE FROM evidence_file_reservations
+                    WHERE storage_key = :storage_key
+                    """
+                ),
+                {"storage_key": foreign_key},
+            )
+        _refuse_storage_function(
+            engine, "record_evidence_storage_failure", token_b, foreign_key
+        )
+        _refuse_storage_function(
+            engine, "release_evidence_object_reservation", token_b, foreign_key
+        )
+        with engine.begin() as connection:
+            cleanup_keys = connection.scalars(
+                text("SELECT storage_key FROM evidence_storage_cleanup")
+            ).all()
+            remaining = connection.scalar(
+                text(
+                    """
+                    SELECT storage_key
+                    FROM evidence_file_reservations
+                    WHERE storage_key = :storage_key
+                    """
+                ),
+                {"storage_key": referenced_key},
+            )
+        assert cleanup_keys == [owned_key]
+        assert remaining == referenced_key
+
+
+def _reserve_as_app(engine, token: str, evidence_id, key: str) -> None:
+    with engine.begin() as connection:
+        _enter_public(connection)
+        reserved = connection.scalar(
+            text(
+                """
+                SELECT reserve_evidence_object(
+                    :token, :evidence_id, :storage_key
+                )
+                """
+            ),
+            {
+                "token": token,
+                "evidence_id": evidence_id,
+                "storage_key": key,
+            },
+        )
+    assert reserved is not None
+
+
+def _call_storage_function(engine, name: str, token: str, key: str) -> None:
+    if name not in {
+        "record_evidence_storage_failure",
+        "release_evidence_object_reservation",
+    }:
+        raise AssertionError("refusing an unexpected storage function")
+    with engine.begin() as connection:
+        _enter_public(connection)
+        connection.execute(
+            text(f"SELECT {name}(:token, :storage_key)"),
+            {"token": token, "storage_key": key},
+        )
+
+
+def _refuse_storage_function(engine, name: str, token: str, key: str) -> None:
+    if name not in {
+        "record_evidence_storage_failure",
+        "release_evidence_object_reservation",
+    }:
+        raise AssertionError("refusing an unexpected storage function")
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        _enter_public(connection)
+        with pytest.raises(SQLAlchemyError, match="invalid submission"):
+            connection.execute(
+                text(f"SELECT {name}(:token, :storage_key)"),
+                {"token": token, "storage_key": key},
+            )
+        transaction.rollback()
+
+
 def _request_engine(engine, url: str, login: str):
     if not login.startswith("linkreq_") or not login.replace("_", "").isalnum():
         raise AssertionError("refusing an unexpected request login")
     schema = require_test_target(engine).schema
     quoted = quoted_isolated_schema(schema)
     with engine.begin() as connection:
-        connection.execute(
-            text(
-                f"CREATE ROLE {login} LOGIN NOSUPERUSER NOBYPASSRLS "
-                "NOCREATEDB NOCREATEROLE NOINHERIT"
-            )
+        password = create_test_login(
+            connection,
+            login,
+            "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT",
         )
         connection.execute(text(f"GRANT {APP_ROLE} TO {login}"))
         connection.execute(text(f"GRANT USAGE ON SCHEMA {quoted} TO {login}"))
-    parsed = make_url(url)
-    request_url = URL.create(
-        drivername=parsed.drivername,
-        username=login,
-        password=None,
-        host=parsed.host,
-        port=parsed.port,
-        database=parsed.database,
-    ).render_as_string(hide_password=False)
+    if password is None:
+        raise AssertionError("test login has no password")
+    request_url = temporary_role_url(url, login, password)
     try:
         return create_database_engine(
             request_url,
@@ -1558,8 +1794,8 @@ def _assert_function_boundary(connection) -> None:
         "submission_target_organization(p_token text)",
         "reserve_evidence_object(p_token text, p_evidence_id uuid, p_storage_key text)",
         "submit_public_evidence_with_file(p_token text, p_description text, p_reference text, p_submitter_name text, p_evidence_id uuid, p_storage_key text, p_filename text, p_media_type text, p_byte_size integer, p_checksum text)",
-        "record_evidence_storage_failure(p_storage_key text)",
-        "release_evidence_object_reservation(p_storage_key text)",
+        "record_evidence_storage_failure(p_token text, p_storage_key text)",
+        "release_evidence_object_reservation(p_token text, p_storage_key text)",
     }
     for signature in (
         "public_submission_context(text)",
@@ -1568,8 +1804,8 @@ def _assert_function_boundary(connection) -> None:
         "submission_target_organization(text)",
         "reserve_evidence_object(text, uuid, text)",
         "submit_public_evidence_with_file(text, text, text, text, uuid, text, text, text, integer, text)",
-        "record_evidence_storage_failure(text)",
-        "release_evidence_object_reservation(text)",
+        "record_evidence_storage_failure(text, text)",
+        "release_evidence_object_reservation(text, text)",
     ):
         assert connection.scalar(
             text(

@@ -67,6 +67,7 @@ _RECORD_FUNCTION = "record_evidence_storage_failure"
 _RELEASE_FUNCTION = "release_evidence_object_reservation"
 _CLAIM_FUNCTION = "claim_evidence_storage_key"
 _COMPLETE_FUNCTION = "complete_evidence_storage_cleanup"
+_CONFIRM_FUNCTION = "confirm_evidence_storage_claim"
 _FILE_FUNCTIONS = {
     _TARGET_FUNCTION,
     _RESERVE_FUNCTION,
@@ -75,10 +76,19 @@ _FILE_FUNCTIONS = {
     _RELEASE_FUNCTION,
     _CLAIM_FUNCTION,
     _COMPLETE_FUNCTION,
+    _CONFIRM_FUNCTION,
 }
 CLEANUP_GRACE_SECONDS = 86400
 CLAIM_RETRY_SECONDS = 300
 _MAINTENANCE_ROLE = "commitmentops_maintenance"
+_ADVISORY_LOCK = (
+    "SELECT pg_catalog.pg_advisory_lock("
+    "pg_catalog.hashtextextended(CAST(:storage_key AS text), 0::bigint))"
+)
+_ADVISORY_UNLOCK = (
+    "SELECT pg_catalog.pg_advisory_unlock("
+    "pg_catalog.hashtextextended(CAST(:storage_key AS text), 0::bigint))"
+)
 
 
 @dataclass(frozen=True)
@@ -338,10 +348,10 @@ class SubmissionRepository:
                 inspected=inspected,
             )
         except Exception:
-            self._discard_object(key)
+            self._discard_object(token, key)
             raise
         if stored_id is None:
-            self._discard_object(key)
+            self._discard_object(token, key)
         return stored_id
 
     def file_download_status(
@@ -394,21 +404,32 @@ class SubmissionRepository:
     ) -> int:
         """Claim an eligible key, then delete that object.
 
-        The database claim commits before any storage delete. A key that is
-        referenced, reserved, malformed, or still inside the grace period is
-        not claimed. If the database or storage cannot be checked, nothing
-        is deleted. A failed delete leaves the claim in place for a later
-        retry. Completion refuses an unexpired reservation.
+        The database claim commits before any storage delete. PostgreSQL then
+        holds a session-level advisory lock on
+        ``hashtextextended(storage_key, 0)``, the same key used by
+        ``claim_evidence_storage_key``. That lock stays held across the
+        authorization recheck, the storage delete, and completion, and it is
+        released on every return path. The claim transaction is not left
+        open during the storage request. A second worker's claim takes a
+        transaction lock on that same key, so it cannot rotate the token
+        while this lock is held. The recheck requires the original claim
+        token, no evidence-file row, and no active reservation. A failed
+        recheck or a failed storage delete leaves the object in place. If
+        the storage delete succeeds and completing the cleanup row fails,
+        the object is already gone, the row remains, the lock is released,
+        and that key is not counted. Deleting a missing key succeeds, so a
+        later pass can finish the row.
+
+        SQLite has no session advisory lock. Its write transaction starts
+        after the storage existence check and stays open across the recheck,
+        delete, and completion. A second connection cannot change the claim
+        row during that transaction.
 
         This process does not start a cleanup worker. The application login
         can assume ``commitmentops_app`` only. ``_maintenance_session`` sets
         ``commitmentops_maintenance`` and fails closed, before any delete,
         when that role cannot be assumed. Do not grant the maintenance role
-        to the application login, and do not run a second worker. A claim
-        older than ``CLAIM_RETRY_SECONDS`` can be adopted, and the worker
-        that lost it still deletes without checking the token again. That
-        race stays unresolved until cleanup runs on one privileged
-        connection that is not the application login.
+        to the application login.
         """
 
         if grace_seconds < CLEANUP_GRACE_SECONDS:
@@ -427,22 +448,8 @@ class SubmissionRepository:
                 raise PersistenceError(
                     "evidence cleanup refused an invalid storage key"
                 ) from exc
-            try:
-                self._storage.exists(key)
-            except PersistenceError:
-                raise
-            except Exception as exc:
-                raise PersistenceError(
-                    "evidence cleanup could not verify object storage"
-                ) from exc
-            try:
-                self._storage.delete(key)
-            except Exception as exc:
-                raise PersistenceError(
-                    "evidence cleanup stopped before an unverified delete"
-                ) from exc
-            self._complete_claim(key, token)
-            deleted += 1
+            if self._delete_claimed_object(key, token):
+                deleted += 1
 
     def _target_organization(self, token: str) -> UUID | None:
         try:
@@ -558,18 +565,18 @@ class SubmissionRepository:
                 raise DomainValidationError("The submission is not valid.") from None
             _raise_submission_failure(exc, token)
 
-    def _discard_object(self, key: str) -> None:
+    def _discard_object(self, token: str, key: str) -> None:
         storage = self._storage
         if storage is None:
             raise PersistenceError("evidence file storage is not configured")
         try:
             storage.delete(key)
         except Exception:
-            self._record_cleanup(key)
+            self._record_cleanup(token, key)
             return
-        self._release_reservation(key)
+        self._release_reservation(token, key)
 
-    def _record_cleanup(self, key: str) -> None:
+    def _record_cleanup(self, token: str, key: str) -> None:
         require_storage_key(key)
         try:
             with tenant_session(
@@ -581,24 +588,22 @@ class SubmissionRepository:
                 if _is_postgres(session):
                     session.execute(
                         text(
-                            f"SELECT {_qualified_function(session, _RECORD_FUNCTION)}(:storage_key)"
+                            "SELECT "
+                            f"{_qualified_function(session, _RECORD_FUNCTION)}"
+                            "(:token, :storage_key)"
                         ),
-                        {"storage_key": key},
+                        {"token": token, "storage_key": key},
                     )
                     return
-                referenced = session.scalar(
-                    select(EvidenceFileRecord.id).where(
-                        EvidenceFileRecord.storage_key == key
-                    )
-                )
-                if referenced is not None:
+                reservation = _sqlite_owned_reservation(session, token, key)
+                if _sqlite_key_referenced(session, key):
                     raise PersistenceError(
                         "evidence cleanup refused a referenced object"
                     )
                 session.add(
                     EvidenceStorageCleanupRecord(
                         storage_key=key,
-                        organization_id=UUID(key.split("/", 1)[0]),
+                        organization_id=reservation.organization_id,
                         recorded_at=datetime.now(UTC),
                     )
                 )
@@ -609,7 +614,7 @@ class SubmissionRepository:
                 "evidence object cleanup could not be recorded"
             ) from exc
 
-    def _release_reservation(self, key: str) -> None:
+    def _release_reservation(self, token: str, key: str) -> None:
         require_storage_key(key)
         with tenant_session(
             self._session_factory,
@@ -622,18 +627,152 @@ class SubmissionRepository:
                     text(
                         "SELECT "
                         f"{_qualified_function(session, _RELEASE_FUNCTION)}"
-                        "(:storage_key)"
+                        "(:token, :storage_key)"
                     ),
-                    {"storage_key": key},
+                    {"token": token, "storage_key": key},
                 )
                 return
+            reservation = _sqlite_owned_reservation(session, token, key)
             if _sqlite_key_referenced(session, key):
                 raise PersistenceError("evidence cleanup refused a referenced object")
-            session.execute(
-                EvidenceFileReservationRecord.__table__.delete().where(
-                    EvidenceFileReservationRecord.storage_key == key
+            session.delete(reservation)
+
+    def _delete_claimed_object(self, key: str, token: UUID) -> bool:
+        storage = self._storage
+        if storage is None:
+            raise PersistenceError("evidence file storage is not configured")
+        session = self._session_factory()
+        try:
+            if _is_postgres(session):
+                bind = session.get_bind()
+                session.close()
+                return self._postgres_delete_claimed_object(bind, storage, key, token)
+            _require_storage_object(storage, key)
+            return self._sqlite_delete_claimed_object(session, storage, key, token)
+        finally:
+            session.close()
+
+    def _postgres_delete_claimed_object(self, bind, storage, key: str, token: UUID) -> bool:
+        """Hold one connection so the session advisory lock survives commit."""
+
+        connection = bind.connect()
+        locked = False
+        try:
+            self._postgres_lock(connection, key)
+            locked = True
+            _require_storage_object(storage, key)
+            if not self._postgres_confirm(connection, key, token):
+                return False
+            _delete_storage_object(storage, key)
+            self._postgres_complete(connection, key, token)
+            return True
+        finally:
+            if locked:
+                self._postgres_unlock(connection, key)
+            connection.close()
+
+    def _postgres_lock(self, connection, key: str) -> None:
+        try:
+            with connection.begin():
+                self._assume_maintenance_connection(connection)
+                connection.execute(text(_ADVISORY_LOCK), {"storage_key": key})
+        except PersistenceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise PersistenceError(
+                "evidence cleanup could not verify the database"
+            ) from exc
+
+    def _postgres_confirm(self, connection, key: str, token: UUID) -> bool:
+        try:
+            with connection.begin():
+                self._assume_maintenance_connection(connection)
+                allowed = connection.scalar(
+                    text(
+                        "SELECT "
+                        f"{_qualified_function_connection(connection, _CONFIRM_FUNCTION)}"
+                        "(:storage_key, :claim_token)"
+                    ),
+                    {"storage_key": key, "claim_token": token},
                 )
+        except PersistenceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise PersistenceError(
+                "evidence cleanup could not verify the database"
+            ) from exc
+        return bool(allowed)
+
+    def _postgres_complete(self, connection, key: str, token: UUID) -> None:
+        require_storage_key(key)
+        try:
+            with connection.begin():
+                self._assume_maintenance_connection(connection)
+                connection.execute(
+                    text(
+                        "SELECT "
+                        f"{_qualified_function_connection(connection, _COMPLETE_FUNCTION)}"
+                        "(:storage_key, :claim_token)"
+                    ),
+                    {"storage_key": key, "claim_token": token},
+                )
+        except PersistenceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise PersistenceError(
+                "evidence cleanup could not verify the database"
+            ) from exc
+
+    def _postgres_unlock(self, connection, key: str) -> None:
+        try:
+            if connection.in_transaction():
+                connection.rollback()
+            connection.execute(text(_ADVISORY_UNLOCK), {"storage_key": key})
+            connection.commit()
+        except Exception:
+            connection.invalidate()
+
+    def _sqlite_delete_claimed_object(
+        self,
+        session: Session,
+        storage: ObjectStorage,
+        key: str,
+        token: UUID,
+    ) -> bool:
+        transaction = session.begin()
+        try:
+            session.execute(
+                text(
+                    """
+                    UPDATE evidence_storage_cleanup
+                       SET claimed_at = claimed_at
+                     WHERE storage_key = :storage_key
+                    """
+                ),
+                {"storage_key": key},
             )
+            if not _sqlite_claim_authorized(session, key, token):
+                transaction.rollback()
+                return False
+            _delete_storage_object(storage, key)
+            _sqlite_complete_claim(session, key, token)
+            transaction.commit()
+        except Exception:
+            if transaction.is_active:
+                transaction.rollback()
+            raise
+        return True
+
+    def _assume_maintenance(self, session: Session) -> None:
+        if not _is_postgres(session):
+            return
+        self._assume_maintenance_connection(session)
+
+    def _assume_maintenance_connection(self, connection) -> None:
+        connection.execute(text(f"SET LOCAL ROLE {_MAINTENANCE_ROLE}"))
+        role = connection.scalar(text("SELECT current_user"))
+        if role != _MAINTENANCE_ROLE:
+            raise PersistenceError("evidence cleanup could not be authorized")
 
     def _claim_one(self, grace_seconds: int) -> tuple[str, UUID] | None:
         try:
@@ -682,13 +821,7 @@ class SubmissionRepository:
     @contextmanager
     def _maintenance_session(self) -> Iterator[Session]:
         with self._session_factory.begin() as session:
-            if _is_postgres(session):
-                session.execute(text(f"SET LOCAL ROLE {_MAINTENANCE_ROLE}"))
-                role = session.scalar(text("SELECT current_user"))
-                if role != _MAINTENANCE_ROLE:
-                    raise PersistenceError(
-                        "evidence cleanup could not be authorized"
-                    )
+            self._assume_maintenance(session)
             yield session
 
 
@@ -724,9 +857,13 @@ def _is_postgres(session: Session) -> bool:
 
 
 def _qualified_function(session: Session, name: str) -> str:
+    return _qualified_function_connection(session, name)
+
+
+def _qualified_function_connection(connection, name: str) -> str:
     if name not in {_CONTEXT_FUNCTION, _SUBMIT_FUNCTION, *_FILE_FUNCTIONS}:
         raise PersistenceError("submission function is unavailable")
-    schema = session.scalar(text("SELECT current_schema()"))
+    schema = connection.scalar(text("SELECT current_schema()"))
     if not isinstance(schema, str) or _SCHEMA_NAME.fullmatch(schema) is None:
         raise PersistenceError("submission function schema is unavailable")
     return f'"{schema}".{name}'
@@ -1247,6 +1384,40 @@ def _sqlite_claim_stale(
     return None
 
 
+def _require_storage_object(storage: ObjectStorage, key: str) -> None:
+    try:
+        storage.exists(key)
+    except PersistenceError:
+        raise
+    except Exception as exc:
+        raise PersistenceError(
+            "evidence cleanup could not verify object storage"
+        ) from exc
+
+
+def _delete_storage_object(storage: ObjectStorage, key: str) -> None:
+    try:
+        storage.delete(key)
+    except Exception as exc:
+        raise PersistenceError(
+            "evidence cleanup stopped before an unverified delete"
+        ) from exc
+
+
+def _sqlite_claim_authorized(session: Session, key: str, token: UUID) -> bool:
+    now = datetime.now(UTC)
+    if _sqlite_key_referenced(session, key):
+        return False
+    if _sqlite_reservation_active(session, key, now):
+        return False
+    row = session.get(EvidenceStorageCleanupRecord, key)
+    return (
+        row is not None
+        and row.claim_token is not None
+        and UUID(str(row.claim_token)) == UUID(str(token))
+    )
+
+
 def _sqlite_complete_claim(session: Session, key: str, token: UUID) -> None:
     now = datetime.now(UTC)
     if _sqlite_reservation_active(session, key, now):
@@ -1264,6 +1435,28 @@ def _sqlite_complete_claim(session: Session, key: str, token: UUID) -> None:
     reservation = session.get(EvidenceFileReservationRecord, key)
     if reservation is not None and reservation.expires_at <= now:
         session.delete(reservation)
+
+
+def _sqlite_owned_reservation(
+    session: Session,
+    token: str,
+    key: str,
+) -> EvidenceFileReservationRecord:
+    organization_id = _sqlite_target_organization(
+        session,
+        submission_token_hash(token),
+        datetime.now(UTC),
+    )
+    reservation = session.get(EvidenceFileReservationRecord, key)
+    if (
+        organization_id is None
+        or reservation is None
+        or reservation.organization_id != organization_id
+        or key.split("/")[:2]
+        != [str(organization_id), str(reservation.evidence_id)]
+    ):
+        raise PersistenceError("evidence storage operation was not authorized")
+    return reservation
 
 
 def _sqlite_key_referenced(session: Session, key: str) -> bool:
