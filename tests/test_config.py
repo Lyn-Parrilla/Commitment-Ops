@@ -215,15 +215,23 @@ def test_underprivileged_migration_login_is_rejected() -> None:
     assert migration_login_is_privileged(
         is_superuser=False,
         can_create_role=False,
+        bypasses_rls=False,
     ) is False
     assert migration_login_is_privileged(
         is_superuser=True,
         can_create_role=False,
+        bypasses_rls=False,
     ) is True
     assert migration_login_is_privileged(
         is_superuser=False,
         can_create_role=True,
+        bypasses_rls=True,
     ) is True
+    assert migration_login_is_privileged(
+        is_superuser=False,
+        can_create_role=True,
+        bypasses_rls=False,
+    ) is False
 
 
 def test_get_settings_is_cached(monkeypatch) -> None:

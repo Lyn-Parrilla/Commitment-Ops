@@ -942,7 +942,9 @@ def test_underprivileged_migration_login_changes_nothing() -> None:
                 ),
                 "head",
             )
-        assert "cannot administer roles" in _messages(caught.value)
+        assert "cannot create roles and bypass row-level security" in _messages(
+            caught.value
+        )
         with admin.connect() as connection:
             tables = connection.scalar(
                 text(

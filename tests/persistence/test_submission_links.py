@@ -1730,7 +1730,7 @@ def _assert_function_boundary(connection) -> None:
     )
     assert granted_owner == 0
     assert app_is_submission_member is False
-    assert tuple(owner) == (False, False, True, False, False)
+    assert tuple(owner) == (False, False, False, False, False)
     assert tuple(forced) == (True, True)
     assert app_privileges == {"INSERT"}
     assert app_select_columns == {

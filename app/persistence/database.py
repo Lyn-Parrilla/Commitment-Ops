@@ -105,7 +105,7 @@ def configured_migration_database_url(settings: Settings | None = None) -> str:
     ``DATABASE_URL`` so SQLite tests and a local single-login database keep
     working. On PostgreSQL that fallback is not permission to migrate:
     ``migrations/env.py`` refuses the connection unless the login is a
-    superuser or has ``CREATEROLE``.
+    superuser or has both ``CREATEROLE`` and ``BYPASSRLS``.
     """
 
     active = settings or get_settings()
@@ -177,10 +177,19 @@ def migration_login_is_privileged(
     *,
     is_superuser: bool,
     can_create_role: bool,
+    bypasses_rls: bool,
 ) -> bool:
-    """True when a migration login can create or administer cluster roles."""
+    """True when a migration login can create roles and pass forced RLS.
 
-    return bool(is_superuser or can_create_role)
+    A superuser qualifies. A non-superuser qualifies only with both
+    ``CREATEROLE`` and ``BYPASSRLS``, which is the hosted Supabase
+    ``postgres`` role. ``CREATEROLE`` alone cannot create a ``BYPASSRLS``
+    role, and forced row-level security would apply to its own writes.
+    """
+
+    if is_superuser:
+        return True
+    return bool(can_create_role and bypasses_rls)
 
 
 def configured_database_url(settings: Settings | None = None) -> str:

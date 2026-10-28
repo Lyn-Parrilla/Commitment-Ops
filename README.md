@@ -154,7 +154,7 @@ PostgreSQL is the production target and is compatible with Supabase PostgreSQL.
 The standard suite uses isolated SQLite files. Alembic uses an explicit URL
 when the migration config already has one. Otherwise it uses
 `MIGRATION_DATABASE_URL`, or `DATABASE_URL` when the migration URL is empty.
-On PostgreSQL that opened login must be a superuser or have `CREATEROLE`.
+On PostgreSQL that opened login must be a superuser, or a non-superuser with both `CREATEROLE` and `BYPASSRLS`. The hosted Supabase `postgres` role meets that requirement. A login with only `CREATEROLE` is refused.
 An underprivileged runtime login is refused before any schema change.
 Application startup does not connect or apply migrations.
 
@@ -251,12 +251,14 @@ docker run --rm -p 8000:8000 \
   commitmentops
 ```
 
-Export `DATABASE_URL` before running the migration command. When that login is
-not a superuser and does not have `CREATEROLE`, also export
+Export `DATABASE_URL` before running the migration command. When that login
+cannot create roles and bypass row-level security, also export
 `MIGRATION_DATABASE_URL` for the privileged login and pass it to the migration
-container. The command deliberately receives those existing environment values
-without placing a connection string in source or shell history. The image's
-default command starts only uvicorn; it does not apply migrations automatically.
+container. On hosted Supabase that privileged login is the project `postgres`
+role, not the restricted runtime role and not the service-role key. The
+command deliberately receives those existing environment values without
+placing a connection string in source or shell history. The image's default
+command starts only uvicorn; it does not apply migrations automatically.
 
 Railway should supply `DATABASE_URL` through service variables. Supply
 `MIGRATION_DATABASE_URL` as well when the runtime login must stay restricted.
@@ -559,16 +561,28 @@ pytest -m "not postgres"
 ```
 
 `pytest` runs the SQLite unit tests. PostgreSQL integration tests run only
-when `TEST_DATABASE_URL` is set; otherwise they skip. See Persistence and
-audit foundation for the isolation rules.
+when `TEST_DATABASE_URL` is set; otherwise they skip. A skip does not verify
+PostgreSQL or Supabase. See Persistence and audit foundation for the
+isolation rules.
+
+`tests/persistence/test_clean_postgres_migration.py` migrates a new database
+from an empty `public` schema to the repository head, then runs that upgrade
+again. It runs only when `TEST_DATABASE_URL` is a loopback PostgreSQL URL and
+refuses any other host. It does not read `DATABASE_URL` or contact a hosted
+Supabase project.
 
 ## Configuration
 
 Application startup itself does not connect to the database or JWKS endpoint.
-`DATABASE_URL` is required for application persistence. Alembic uses
+`DATABASE_URL` is the application runtime connection. Its login must be able
+to assume `commitmentops_app` and must not itself be privileged. Alembic uses
 `MIGRATION_DATABASE_URL` when it is set. When it is empty, Alembic opens
 `DATABASE_URL` and, on PostgreSQL, continues only if that login is a superuser
-or has `CREATEROLE`. Application transactions on PostgreSQL run as
+or has both `CREATEROLE` and `BYPASSRLS`. `TEST_DATABASE_URL` is read only by
+PostgreSQL integration tests. It is never a fallback for the application or
+for Alembic, and it must point at a disposable database rather than the
+Supabase project used by `DATABASE_URL`. Leaving it unset skips those tests;
+the skip is not a successful migration. Application transactions on PostgreSQL run as
 `commitmentops_app` with transaction-local user and organization settings.
 Before that switch, the connected runtime login is refused when it is a
 superuser, has `BYPASSRLS`, or can assume a superuser, RLS-bypass,
@@ -587,8 +601,8 @@ protected API requests.
 | `LOG_LEVEL` | Process log level |
 | `PORT` | HTTP port (Railway sets this; local default is 8000) |
 | `DATABASE_URL` | Runtime PostgreSQL URL. The login is refused when it is privileged, even if it is also the migration login |
-| `MIGRATION_DATABASE_URL` | Privileged Alembic URL (superuser or `CREATEROLE`). Empty reuses `DATABASE_URL`, which PostgreSQL rejects when that login cannot administer roles |
-| `TEST_DATABASE_URL` | Optional PostgreSQL URL used only by integration tests |
+| `MIGRATION_DATABASE_URL` | Alembic URL. The login must be a superuser or have both `CREATEROLE` and `BYPASSRLS` (the Supabase `postgres` role). Empty reuses `DATABASE_URL`, which PostgreSQL rejects when that login cannot administer roles and bypass row-level security |
+| `TEST_DATABASE_URL` | Disposable PostgreSQL URL used only by integration tests. Unset skips those tests and does not verify the database |
 | `AUTH_ISSUER` | Exact trusted JWT issuer |
 | `AUTH_AUDIENCE` | Required JWT audience, normally `authenticated` for Supabase |
 | `AUTH_JWKS_URL` | Trusted public JWKS endpoint for signing-key lookup |
@@ -609,9 +623,10 @@ variables, not Git. Do not put `SUPABASE_SERVICE_ROLE_KEY` in frontend
 configuration.
 
 Before serving the new interface, from a machine that can reach the production
-database, set `MIGRATION_DATABASE_URL` to a superuser or `CREATEROLE` login and
-`DATABASE_URL` to a separate restricted runtime login. Alembic opens the
-migration URL:
+database, set `MIGRATION_DATABASE_URL` to a superuser or to the Supabase
+`postgres` role (`CREATEROLE` and `BYPASSRLS`) and `DATABASE_URL` to a separate
+restricted runtime login. Do not point `TEST_DATABASE_URL` at that project.
+Alembic opens the migration URL:
 
 ```bash
 alembic upgrade head

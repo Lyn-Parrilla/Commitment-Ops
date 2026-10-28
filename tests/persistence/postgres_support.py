@@ -40,8 +40,9 @@ EXPECTED_ALEMBIC_HEAD = "20261023_08"
 SKIP_REASON = (
     "PostgreSQL integration tests were skipped because TEST_DATABASE_URL is "
     "not set. Export that variable, or set only that key in the untracked "
-    ".env file, to a PostgreSQL database where a new schema can be created. "
-    "DATABASE_URL is not used. SQLite unit tests do not need this variable."
+    ".env file, to a disposable PostgreSQL database where a new schema can "
+    "be created. DATABASE_URL is not used. A skipped result does not verify "
+    "PostgreSQL or Supabase. SQLite unit tests do not need this variable."
 )
 
 
