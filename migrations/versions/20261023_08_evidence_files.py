@@ -234,6 +234,19 @@ def _install_boundary(
             """
         )
     )
+    for table in (FILES, RESERVATIONS, CLEANUP):
+        bind.execute(
+            sa.text(
+                f"""
+                CREATE POLICY submission_definer_access
+                ON {quoted}.{table}
+                FOR ALL
+                TO {submission}
+                USING (true)
+                WITH CHECK (true)
+                """
+            )
+        )
     bind.execute(
         sa.text(
             f"""
@@ -267,10 +280,47 @@ def _install_boundary(
         _complete_cleanup_function(quoted),
     ):
         bind.execute(sa.text(statement))
+    bind.execute(sa.text("GRANT commitmentops_submission TO CURRENT_USER"))
+    bind.execute(sa.text(f"GRANT CREATE ON SCHEMA {quoted} TO {submission}"))
     for name, signature in _APP_FUNCTIONS:
         _grant_function(bind, quoted, name, signature, app, submission)
     for name, signature in _MAINTENANCE_FUNCTIONS:
         _grant_function(bind, quoted, name, signature, maintenance, submission)
+    bind.execute(sa.text(f"REVOKE CREATE ON SCHEMA {quoted} FROM {submission}"))
+    bind.execute(
+        sa.text(
+            """
+            DO $release$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                      FROM pg_auth_members AS membership
+                      JOIN pg_roles AS granted_role
+                        ON granted_role.oid = membership.roleid
+                      JOIN pg_roles AS member_role
+                        ON member_role.oid = membership.member
+                     WHERE granted_role.rolname = 'commitmentops_submission'
+                       AND member_role.rolname = current_user
+                ) THEN
+                    REVOKE commitmentops_submission FROM CURRENT_USER;
+                END IF;
+                IF EXISTS (
+                    SELECT 1
+                      FROM pg_auth_members AS membership
+                      JOIN pg_roles AS granted_role
+                        ON granted_role.oid = membership.roleid
+                      JOIN pg_roles AS member_role
+                        ON member_role.oid = membership.member
+                     WHERE granted_role.rolname = 'commitmentops_maintenance'
+                       AND member_role.rolname = current_user
+                ) THEN
+                    REVOKE commitmentops_maintenance FROM CURRENT_USER;
+                END IF;
+            END
+            $release$
+            """
+        )
+    )
 
 
 def _drop_boundary(bind: sa.Connection, quoted: str) -> None:
@@ -319,16 +369,7 @@ _MAINTENANCE_ROLE_STATEMENT = """
 DO $maintenance$
 DECLARE
     existing record;
-    migration_is_superuser boolean;
 BEGIN
-    SELECT rolsuper
-      INTO migration_is_superuser
-      FROM pg_roles
-     WHERE rolname = current_user;
-    IF NOT migration_is_superuser THEN
-        RAISE EXCEPTION
-            'Refusing to install evidence cleanup functions because the migration login is not a superuser. Creating the maintenance role requires a superuser. Existing policies were not changed.';
-    END IF;
     SELECT rolcanlogin, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole
       INTO existing
       FROM pg_roles

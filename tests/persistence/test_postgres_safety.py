@@ -224,6 +224,10 @@ def test_postgresql_offline_migration_renders_without_application_url(
     assert "UUID" in rendered
     assert "DROP SCHEMA" not in rendered.upper()
     assert "ALTER ROLE" not in rendered.upper()
+    assert "migration login is not a superuser" not in rendered
+    assert "            BYPASSRLS\n" not in rendered
+    assert "NOBYPASSRLS" in rendered
+    assert "submission_definer_access" in rendered
     assert "Refusing to use existing role commitmentops_app" in rendered
     assert 'CREATE SCHEMA "commitmentops_crypto"' in rendered
     assert (

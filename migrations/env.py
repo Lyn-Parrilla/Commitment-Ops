@@ -4,7 +4,8 @@ An explicit ``sqlalchemy.url`` already present on the config is used as given
 and does not consult application settings. When that option is empty,
 ``MIGRATION_DATABASE_URL`` is used, and ``DATABASE_URL`` is the fallback only
 when the migration URL is also empty. On PostgreSQL the opened login must be a
-superuser or have ``CREATEROLE``; an underprivileged runtime login is refused
+superuser or have both ``CREATEROLE`` and ``BYPASSRLS``. The hosted Supabase
+``postgres`` role qualifies. An underprivileged runtime login is refused
 before schema changes. The runtime username is taken from ``DATABASE_URL`` and
 passed to the row-level security migration so it can receive membership in
 ``commitmentops_app`` without receiving migration privileges. A
@@ -103,13 +104,13 @@ def _require_isolated_search_path(connection: object, quoted_schema: str) -> str
 
 
 def _require_privileged_migration_login(connection: object) -> None:
-    """Refuse a PostgreSQL migration connection that cannot administer roles."""
+    """Refuse a PostgreSQL login that cannot create roles and bypass RLS."""
 
     if connection.dialect.name != "postgresql":  # type: ignore[attr-defined]
         return
     row = connection.exec_driver_sql(  # type: ignore[attr-defined]
         """
-        SELECT rolsuper, rolcreaterole
+        SELECT rolsuper, rolcreaterole, rolbypassrls
         FROM pg_roles
         WHERE rolname = current_user
         """
@@ -118,11 +119,14 @@ def _require_privileged_migration_login(connection: object) -> None:
     if not migration_login_is_privileged(
         is_superuser=bool(row[0]),
         can_create_role=bool(row[1]),
+        bypasses_rls=bool(row[2]),
     ):
         raise RuntimeError(
-            "Refusing to migrate because this login cannot administer roles. "
-            "Set MIGRATION_DATABASE_URL to a superuser or CREATEROLE login. "
-            "An underprivileged runtime login is not used for schema changes."
+            "Refusing to migrate because this login cannot create roles and "
+            "bypass row-level security. Set MIGRATION_DATABASE_URL to a "
+            "superuser or to a login with both CREATEROLE and BYPASSRLS, "
+            "such as the Supabase postgres role. An underprivileged runtime "
+            "login is not used for schema changes."
         )
 
 

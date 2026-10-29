@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, select, text
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
 from app.persistence.database import (
@@ -35,13 +37,33 @@ from app.persistence.orm import OrganizationRecord
 
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
 _TABLE_NAME = re.compile(r"^[a-z_]+$")
+_TEST_ROLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+_TEST_PASSWORD = re.compile(r"^[A-Za-z0-9_-]{24,128}$")
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
+_ROLE_ATTRIBUTE = frozenset(
+    {
+        "LOGIN",
+        "NOLOGIN",
+        "SUPERUSER",
+        "NOSUPERUSER",
+        "BYPASSRLS",
+        "NOBYPASSRLS",
+        "CREATEDB",
+        "NOCREATEDB",
+        "CREATEROLE",
+        "NOCREATEROLE",
+        "INHERIT",
+        "NOINHERIT",
+    }
+)
 LEGACY_ORGANIZATION_ID = UUID("00000000-0000-0000-0000-000000000001")
-EXPECTED_ALEMBIC_HEAD = "20261023_08"
+EXPECTED_ALEMBIC_HEAD = "20261028_10"
 SKIP_REASON = (
     "PostgreSQL integration tests were skipped because TEST_DATABASE_URL is "
     "not set. Export that variable, or set only that key in the untracked "
-    ".env file, to a PostgreSQL database where a new schema can be created. "
-    "DATABASE_URL is not used. SQLite unit tests do not need this variable."
+    ".env file, to a disposable PostgreSQL database where a new schema can "
+    "be created. DATABASE_URL is not used. A skipped result does not verify "
+    "PostgreSQL or Supabase. SQLite unit tests do not need this variable."
 )
 
 
@@ -116,6 +138,119 @@ def assert_postgres_test_url(url: str) -> str:
             "TEST_DATABASE_URL must name a non-template database"
         )
     return normalized
+
+
+def new_test_password() -> str:
+    """Return a generated password that is safe to interpolate into SQL."""
+
+    password = secrets.token_urlsafe(32)
+    if _TEST_PASSWORD.fullmatch(password) is None:
+        raise UnsafeTestDatabase("refusing an unexpected test password")
+    return password
+
+
+def quote_test_role(role: str) -> str:
+    if _TEST_ROLE.fullmatch(role) is None:
+        raise UnsafeTestDatabase("refusing an unexpected test role")
+    return f'"{role}"'
+
+
+def create_test_login(connection, role: str, attributes: str) -> str | None:
+    """Create one test role. A login receives a generated password.
+
+    The password is returned to the caller and is not logged. A failed
+    statement is re-raised without the password or connection string.
+    """
+
+    tokens = attributes.split()
+    if not tokens or any(token not in _ROLE_ATTRIBUTE for token in tokens):
+        raise UnsafeTestDatabase("refusing unexpected role attributes")
+    quoted = quote_test_role(role)
+    password = new_test_password() if "LOGIN" in tokens else None
+    statement = f"CREATE ROLE {quoted} {' '.join(tokens)}"
+    if password is not None:
+        statement += f" PASSWORD '{password}'"
+    try:
+        connection.execute(text(statement))
+    except SQLAlchemyError as exc:
+        redacted = str(exc)
+        if password is not None:
+            redacted = redacted.replace(password, "[redacted]")
+        raise UnsafeTestDatabase(
+            "could not create the test role"
+        ) from PersistenceError(redact_connection_secrets(redacted))
+    return password
+
+
+_EXISTING_SHARED_ROLES = (
+    "commitmentops_app",
+    "commitmentops_submission",
+    "commitmentops_maintenance",
+)
+
+
+def grant_existing_shared_role_admin(connection, member: str) -> None:
+    """Let a temporary migrator administer shared roles that already exist.
+
+    PostgreSQL grants ADMIN only to the role that created them. A reused
+    local cluster may already contain these NOLOGIN roles, and later
+    migrations revoke the temporary membership. This grants ADMIN again
+    without creating, altering, or dropping the shared roles.
+    """
+
+    quoted_member = quote_test_role(member)
+    for role in _EXISTING_SHARED_ROLES:
+        exists = connection.scalar(
+            text("SELECT 1 FROM pg_roles WHERE rolname = :role"),
+            {"role": role},
+        )
+        if not exists:
+            continue
+        connection.execute(
+            text(
+                f"GRANT {quote_test_role(role)} TO {quoted_member} "
+                "WITH ADMIN OPTION"
+            )
+        )
+
+
+def assign_test_role_password(connection, role: str, password: str) -> None:
+    """Set a generated password on a test login without logging it."""
+
+    if _TEST_PASSWORD.fullmatch(password) is None:
+        raise UnsafeTestDatabase("refusing an unexpected test password")
+    quoted = quote_test_role(role)
+    try:
+        connection.execute(text(f"ALTER ROLE {quoted} PASSWORD '{password}'"))
+    except SQLAlchemyError as exc:
+        redacted = str(exc).replace(password, "[redacted]")
+        raise UnsafeTestDatabase(
+            "could not set the test login password"
+        ) from PersistenceError(redact_connection_secrets(redacted))
+
+
+def temporary_role_url(
+    admin_url: str,
+    username: str,
+    password: str,
+    *,
+    database: str | None = None,
+) -> str:
+    """Build a loopback login URL without discarding its password."""
+
+    if _TEST_PASSWORD.fullmatch(password) is None:
+        raise UnsafeTestDatabase("refusing an unexpected test password")
+    quote_test_role(username)
+    if database is not None:
+        quote_test_role(database)
+    parsed = make_url(assert_postgres_test_url(admin_url))
+    host = (parsed.host or "").lower()
+    if host not in _LOOPBACK_HOSTS:
+        raise UnsafeTestDatabase("refusing a non-loopback test login")
+    updated = parsed.set(username=username, password=password)
+    if database is not None:
+        updated = updated.set(database=database)
+    return updated.render_as_string(hide_password=False)
 
 
 def new_test_schema() -> str:

@@ -8,9 +8,12 @@ This module does not read ``.env`` and does not use
 
 The bucket must already exist and be private. Live tests accept only
 ``commitment-ops-test2`` and fail before building a client for any other
-name. The harness does not create or delete buckets. Objects use a reserved
-organization id as their prefix, then a new evidence id and a new random
-suffix. A key that already exists is not written.
+name. The endpoint hostname must be exactly
+``qpwnywbktuyeudtwdgsh.storage.supabase.co``. Any other hostname fails
+before an S3 client is created. The harness does not create or delete
+buckets. Objects use a reserved organization id as their prefix, then a
+new evidence id and a new random suffix. A key that already exists is not
+written.
 
 Export the variables in the shell for one opted-in run. Do not commit them.
 
@@ -52,6 +55,10 @@ _CONFIG_NAMES = (
 )
 TEST_ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111"
 _DISPOSABLE_TEST_BUCKET = "commitment-ops-test2"
+_VERIFIED_STORAGE_HOST = "qpwnywbktuyeudtwdgsh.storage.supabase.co"
+_VERIFIED_STORAGE_ENDPOINT = (
+    f"https://{_VERIFIED_STORAGE_HOST}/storage/v1/s3"
+)
 _SKIP_REASON = (
     "Supabase Storage integration tests were skipped. Set "
     "COMMITMENTOPS_STORAGE_INTEGRATION=1 and export every "
@@ -183,6 +190,59 @@ def test_fresh_test_key_uses_the_reserved_prefix() -> None:
     assert first != second
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://example.supabase.co/storage/v1/s3",
+        "https://qpwnywbktuyeudtwdgsh.supabase.co/storage/v1/s3",
+        "https://other-project.storage.supabase.co/storage/v1/s3",
+        "https://prefix.qpwnywbktuyeudtwdgsh.storage.supabase.co/storage/v1/s3",
+        "http://qpwnywbktuyeudtwdgsh.storage.supabase.co/storage/v1/s3",
+        "https://user:token@qpwnywbktuyeudtwdgsh.storage.supabase.co/storage/v1/s3",
+        "https://qpwnywbktuyeudtwdgsh.storage.supabase.co/storage/v1/s3?acl=public",
+        "https://qpwnywbktuyeudtwdgsh.storage.supabase.co:444/storage/v1/s3",
+    ],
+)
+def test_live_run_refuses_wrong_project_endpoint_before_creating_a_client(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+) -> None:
+    _hide_config(monkeypatch)
+    _set_complete_test_config(monkeypatch, _DISPOSABLE_TEST_BUCKET)
+    monkeypatch.setenv(_CONFIG_NAMES[0], endpoint)
+    _forbid_s3_client(monkeypatch)
+
+    with pytest.raises(pytest.fail.Exception, match="verified test project"):
+        config = require_storage_test_config()
+        _require_supabase_endpoint(config.endpoint)
+        _verification_client(config)
+
+
+def test_verified_project_endpoint_passes_the_host_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _forbid_s3_client(monkeypatch)
+
+    _require_supabase_endpoint(_VERIFIED_STORAGE_ENDPOINT)
+
+
+def test_non_supabase_endpoint_still_fails_before_creating_a_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hide_config(monkeypatch)
+    _set_complete_test_config(monkeypatch, _DISPOSABLE_TEST_BUCKET)
+    monkeypatch.setenv(
+        _CONFIG_NAMES[0],
+        "https://storage.example.test/storage/v1/s3",
+    )
+    _forbid_s3_client(monkeypatch)
+
+    with pytest.raises(pytest.fail.Exception, match="Supabase Storage S3 endpoint"):
+        config = require_storage_test_config()
+        _require_supabase_endpoint(config.endpoint)
+        _verification_client(config)
+
+
 @pytest.mark.supabase_storage
 def test_supabase_storage_round_trip_and_privacy() -> None:
     config = require_storage_test_config()
@@ -298,6 +358,30 @@ def _require_supabase_endpoint(endpoint: str) -> None:
     path = parts.path.rstrip("/")
     if not host.endswith(".supabase.co") or not path.endswith("/storage/v1/s3"):
         pytest.fail("test storage endpoint is not a Supabase Storage S3 endpoint")
+    if (
+        parts.scheme != "https"
+        or host != _VERIFIED_STORAGE_HOST
+        or path != "/storage/v1/s3"
+        or parts.username
+        or parts.password
+        or parts.query
+        or parts.fragment
+        or parts.port not in (None, 443)
+    ):
+        pytest.fail("test storage endpoint is not the verified test project")
+
+
+def _forbid_s3_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbid(*args, **kwargs):
+        raise AssertionError("S3 client was created")
+
+    monkeypatch.setattr(
+        "app.persistence.object_storage._boto3_s3_client",
+        forbid,
+    )
+    import boto3
+
+    monkeypatch.setattr(boto3, "client", forbid)
 
 
 def _adapter(config: StorageTestConfig) -> S3CompatibleObjectStorage:

@@ -6,19 +6,27 @@ Create Date: 2026-10-22
 
 Existing evidence rows keep their person and are marked verified. Public
 submissions may omit the person. PostgreSQL keeps the current tenant
-policies. A no-login BYPASSRLS role owns two functions that read one link
-and append one evidence row. They hash the presented token inside the
-function, so the stored hash is not a usable credential. The application
-role can read every link column except that hash. A trigger rejects any
-later change to revoked_at. They reject a cancelled requirement and any
-workflow that is not draft or active, and they lock those parent rows
-before appending. PostgreSQL treats that row lock as an update privilege,
-so the submission role receives UPDATE on status alone. The application
-role does not receive that grant. When pgcrypto is absent, it is installed
-in commitmentops_crypto and only the submission role may call digest. An
-extension that is already installed is left in place. The application role
-can execute the submission functions and cannot assume the owner role.
-SQLite creates the tables and skips the functions.
+policies. A no-login role without BYPASSRLS owns the functions that read
+one link and append one evidence row. Forced row-level security still
+applies to that role. Policies named submission_definer_access allow only
+that role to see the rows its grants already permit, which is the same
+boundary a BYPASSRLS owner had, without requiring a superuser to create
+the role. That role receives CREATE on the schema only while function
+ownership is assigned, and that privilege is revoked before the migration
+commits. The functions hash the presented token inside the function, so
+the stored hash is not a usable credential. The application role can read
+every link column except that hash. A trigger rejects any later change to
+revoked_at. They reject a cancelled requirement and any workflow that is
+not draft or active, and they lock those parent rows before appending.
+PostgreSQL treats that row lock as an update privilege, so the submission
+role receives UPDATE on status alone. The application role does not
+receive that grant. When pgcrypto is absent, a superuser migration login
+installs it in commitmentops_crypto and only the submission role may call
+digest. A non-superuser login, including the Supabase postgres role,
+requires pgcrypto to be installed already and receives execute only on
+digest(bytea, text). The application role can execute the submission
+functions and cannot assume the owner role. SQLite creates the tables and
+skips the functions.
 """
 
 from __future__ import annotations
@@ -96,16 +104,7 @@ _ROLE_STATEMENT = """
 DO $role$
 DECLARE
     existing record;
-    migration_is_superuser boolean;
 BEGIN
-    SELECT rolsuper
-      INTO migration_is_superuser
-      FROM pg_roles
-     WHERE rolname = current_user;
-    IF NOT migration_is_superuser THEN
-        RAISE EXCEPTION
-            'Refusing to install public submission functions because the migration login is not a superuser. Forced row-level security would block a definer function owned by a normal role, and creating a BYPASSRLS owner requires a superuser. Existing policies were not changed.';
-    END IF;
     SELECT rolcanlogin, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole
       INTO existing
       FROM pg_roles
@@ -114,7 +113,7 @@ BEGIN
         CREATE ROLE commitmentops_submission
             NOLOGIN
             NOSUPERUSER
-            BYPASSRLS
+            NOBYPASSRLS
             NOCREATEDB
             NOCREATEROLE;
         SELECT rolcanlogin, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole
@@ -124,15 +123,24 @@ BEGIN
     END IF;
     IF existing.rolcanlogin
        OR existing.rolsuper
-       OR NOT existing.rolbypassrls
+       OR existing.rolbypassrls
        OR existing.rolcreatedb
        OR existing.rolcreaterole THEN
         RAISE EXCEPTION
-            'Refusing to use existing role commitmentops_submission because it is not NOLOGIN, NOSUPERUSER, BYPASSRLS, NOCREATEDB, and NOCREATEROLE';
+            'Refusing to use existing role commitmentops_submission because it is not NOLOGIN, NOSUPERUSER, NOBYPASSRLS, NOCREATEDB, and NOCREATEROLE';
     END IF;
 END
 $role$
 """
+_SUBMISSION_TABLES = (
+    "submission_links",
+    "organizations",
+    "workflows",
+    "requirements",
+    "evidence",
+    "audit_events",
+)
+_ASSUME_SUBMISSION_ROLE = "GRANT commitmentops_submission TO CURRENT_USER"
 
 
 def upgrade() -> None:
@@ -383,6 +391,8 @@ def _install_postgres_boundary(
     bind.execute(
         sa.text(f"ALTER TABLE {qualified_links} FORCE ROW LEVEL SECURITY")
     )
+    for table in _SUBMISSION_TABLES:
+        bind.execute(sa.text(_submission_definer_policy(quoted_schema, table)))
     guard = f"{quoted_schema}.submission_links_keep_revocation()"
     bind.execute(sa.text(_revocation_guard(quoted_schema)))
     bind.execute(sa.text(f"REVOKE ALL ON FUNCTION {guard} FROM PUBLIC"))
@@ -402,6 +412,10 @@ def _install_postgres_boundary(
         _submit_function(quoted_schema, digest_schema),
     ):
         bind.execute(sa.text(statement))
+    bind.execute(sa.text(_ASSUME_SUBMISSION_ROLE))
+    bind.execute(
+        sa.text(f"GRANT CREATE ON SCHEMA {quoted_schema} TO {SUBMISSION_ROLE}")
+    )
     for signature in (
         "public_submission_context(text)",
         "submit_public_evidence(text, text, text, text)",
@@ -418,6 +432,24 @@ def _install_postgres_boundary(
         bind.execute(
             sa.text(f"GRANT EXECUTE ON FUNCTION {qualified} TO {APP_ROLE}")
         )
+    bind.execute(
+        sa.text(
+            f"REVOKE CREATE ON SCHEMA {quoted_schema} FROM {SUBMISSION_ROLE}"
+        )
+    )
+
+
+def _submission_definer_policy(quoted_schema: str, table: str) -> str:
+    """Let the definer role use its grants under forced row-level security."""
+
+    return f"""
+    CREATE POLICY submission_definer_access
+    ON {quoted_schema}.{_quote(table)}
+    FOR ALL
+    TO {SUBMISSION_ROLE}
+    USING (true)
+    WITH CHECK (true)
+    """
 
 
 def _drop_postgres_boundary(bind: sa.Connection, quoted_schema: str) -> None:
@@ -452,6 +484,13 @@ def _drop_postgres_boundary(bind: sa.Connection, quoted_schema: str) -> None:
             f"ON {qualified_links}"
         )
     )
+    for table in _SUBMISSION_TABLES:
+        bind.execute(
+            sa.text(
+                "DROP POLICY IF EXISTS submission_definer_access "
+                f"ON {quoted_schema}.{_quote(table)}"
+            )
+        )
     for table in ("requirements", "workflows"):
         bind.execute(
             sa.text(
@@ -475,9 +514,38 @@ def _prepare_digest(bind: sa.Connection) -> str:
         return _quote(CRYPTO_SCHEMA)
     installed = _installed_extension_schema(bind)
     if installed is not None:
-        return _quote(_validated_identifier(installed))
+        schema = _validated_identifier(installed)
+        _grant_existing_digest(bind, schema)
+        return _quote(schema)
+    is_superuser = bind.execute(
+        sa.text(
+            """
+            SELECT rolsuper
+            FROM pg_roles
+            WHERE rolname = current_user
+            """
+        )
+    ).scalar()
+    if is_superuser is not True:
+        raise RuntimeError(
+            "pgcrypto is not installed. A non-superuser migration login "
+            "cannot install it. Install pgcrypto, then retry the migration."
+        )
     _install_private_pgcrypto(bind)
     return _quote(CRYPTO_SCHEMA)
+
+
+def _grant_existing_digest(bind: sa.Connection, schema: str) -> None:
+    """Expose only digest(bytea, text) when pgcrypto is already installed."""
+
+    quoted = _quote(schema)
+    bind.execute(sa.text(f"GRANT USAGE ON SCHEMA {quoted} TO {SUBMISSION_ROLE}"))
+    bind.execute(
+        sa.text(
+            f"GRANT EXECUTE ON FUNCTION {quoted}.digest(bytea, text) "
+            f"TO {SUBMISSION_ROLE}"
+        )
+    )
 
 
 def _installed_extension_schema(bind: sa.Connection) -> str | None:

@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
@@ -45,15 +44,18 @@ from tests.persistence.postgres_support import (
     LEGACY_ORGANIZATION_ID,
     SKIP_REASON,
     assert_postgres_test_url,
+    create_test_login,
     explicit_test_database_url,
     isolated_postgres_engine,
     require_test_target,
+    temporary_role_url,
 )
 
 ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 OTHER_ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000002")
 USER_ID = UUID("20000000-0000-0000-0000-000000000001")
 DETECT_LOGIN = "commitmentops_detect"
+_DETECT_PASSWORD: str | None = None
 
 
 @pytest.fixture
@@ -1034,23 +1036,25 @@ def _detect(
 
 
 def _replace_detect_login(admin) -> None:
+    global _DETECT_PASSWORD
     _drop_detect_login(admin)
     with admin.begin() as connection:
-        connection.execute(
-            text(
-                f"CREATE ROLE {DETECT_LOGIN} "
-                "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT"
-            )
+        _DETECT_PASSWORD = create_test_login(
+            connection,
+            DETECT_LOGIN,
+            "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT",
         )
 
 
 def _drop_detect_login(admin) -> None:
+    global _DETECT_PASSWORD
     with admin.begin() as connection:
         exists = connection.scalar(
             text("SELECT 1 FROM pg_roles WHERE rolname = :name"),
             {"name": DETECT_LOGIN},
         )
         if not exists:
+            _DETECT_PASSWORD = None
             return
         if connection.scalar(
             text("SELECT pg_has_role(:login, 'commitmentops_app', 'MEMBER')"),
@@ -1060,18 +1064,13 @@ def _drop_detect_login(admin) -> None:
                 text(f"REVOKE commitmentops_app FROM {DETECT_LOGIN}")
             )
         connection.execute(text(f"DROP ROLE {DETECT_LOGIN}"))
+        _DETECT_PASSWORD = None
 
 
 def _detect_login_url(url: str) -> str:
-    parsed = make_url(url)
-    return URL.create(
-        drivername=parsed.drivername,
-        username=DETECT_LOGIN,
-        password=None,
-        host=parsed.host,
-        port=parsed.port,
-        database=parsed.database,
-    ).render_as_string(hide_password=False)
+    if _DETECT_PASSWORD is None:
+        raise AssertionError("test login has no password")
+    return temporary_role_url(url, DETECT_LOGIN, _DETECT_PASSWORD)
 
 
 def _insert_execution_event(connection, *, proposal_id: UUID, event_type: str) -> None:
