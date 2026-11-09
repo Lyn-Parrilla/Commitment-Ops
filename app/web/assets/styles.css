@@ -280,6 +280,7 @@ input:focus, select:focus, textarea:focus {
 
 .org-select { min-width: 12rem; }
 .submission-url { overflow-wrap: anywhere; }
+.source-excerpt { white-space: pre-wrap; }
 
 @media (min-width: 721px) {
   .form-grid { grid-template-columns: 1fr 1fr; }

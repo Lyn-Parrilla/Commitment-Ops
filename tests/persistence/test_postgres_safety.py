@@ -250,6 +250,17 @@ def test_postgresql_offline_migration_renders_without_application_url(
         'GRANT UPDATE ON "public"."requirements" TO commitmentops_submission'
         not in rendered
     )
+    for role in ("anon", "authenticated", "service_role"):
+        assert (
+            "ALTER DEFAULT PRIVILEGES "
+            f'REVOKE ALL ON TABLES FROM "{role}"'
+        ) in rendered
+        assert (
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA "public" '
+            f'REVOKE ALL ON TABLES FROM "{role}"'
+        ) in rendered
+    assert "ALTER DEFAULT PRIVILEGES FOR ROLE" not in rendered
+    assert "migration login must match the session login" in rendered
 
 
 def test_postgresql_model_ddl_uses_native_types() -> None:

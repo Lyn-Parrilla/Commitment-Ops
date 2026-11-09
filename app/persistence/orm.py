@@ -36,6 +36,8 @@ from app.domain.assistance import (
 )
 from app.domain.discovery import (
     DiscoveryClassification,
+    DocumentProcessingStatus,
+    DocumentType,
     HumanDecision,
 )
 from app.domain.enums import (
@@ -787,3 +789,77 @@ class AssistanceProposalEventRecord(Base):
     actor_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class SourceDocumentRecord(Base):
+    """Private grant or contract file for one workflow. Bytes stay in object storage."""
+
+    __tablename__ = "source_documents"
+    __table_args__ = (
+        CheckConstraint(
+            f"document_type IN ({_allowed_values(DocumentType)})",
+            name="ck_source_documents_document_type",
+        ),
+        CheckConstraint(
+            f"processing_status IN ({_allowed_values(DocumentProcessingStatus)})",
+            name="ck_source_documents_processing_status",
+        ),
+        CheckConstraint(
+            "byte_size BETWEEN 1 AND 10485760",
+            name="ck_source_documents_byte_size",
+        ),
+        CheckConstraint(
+            "length(checksum_sha256) = 64",
+            name="ck_source_documents_checksum",
+        ),
+        CheckConstraint(
+            "length(storage_key) = 118 AND storage_key LIKE 'sources/%'",
+            name="ck_source_documents_storage_key",
+        ),
+        CheckConstraint(
+            "failure_code IS NULL OR failure_code IN ("
+            "'no_extractable_text', 'interpretation_unavailable', "
+            "'interpretation_invalid', 'interpretation_failed')",
+            name="ck_source_documents_failure_code",
+        ),
+        ForeignKeyConstraint(
+            ["workflow_id", "organization_id"],
+            ["workflows.id", "workflows.organization_id"],
+            name="fk_source_documents_workflow_organization",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workflow_id",
+            "checksum_sha256",
+            name="uq_source_documents_workflow_checksum",
+        ),
+        Index("ix_source_documents_organization_id", "organization_id"),
+        Index("ix_source_documents_workflow_id", "workflow_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "organizations.id",
+            name="fk_source_documents_organization_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    workflow_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    filename: Mapped[str] = mapped_column(String(200), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(118), nullable=False)
+    processing_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(40))
+    text_truncated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    extracted_pages: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    uploaded_by_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

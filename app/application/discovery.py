@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 from uuid import UUID
@@ -27,6 +28,14 @@ from app.persistence.discovery_repository import DiscoveryRepository
 class CandidateReviewAction(StrEnum):
     APPROVE = "approve"
     REJECT = "reject"
+
+
+@dataclass(frozen=True)
+class ReviewedCandidate:
+    """The reviewed candidate and, only after approval, its requirement."""
+
+    candidate: RequirementCandidate
+    requirement: Requirement | None = None
 
 
 class DiscoveryService:
@@ -97,14 +106,24 @@ class DiscoveryService:
         *,
         note: str | None = None,
         reason: str | None = None,
-    ) -> RequirementCandidate:
+    ) -> ReviewedCandidate:
         candidate = self.get_candidate(candidate_id)
+        requirement = None
         if action == CandidateReviewAction.APPROVE:
-            candidate.approve(reviewer=self._reviewer, note=note)
+            requirement = candidate.approve(
+                reviewer=self._reviewer,
+                note=note,
+            ).requirement
         else:
             candidate.reject(reviewer=self._reviewer, reason=reason or "")
         self._save(candidate)
-        return candidate
+        return ReviewedCandidate(candidate=candidate, requirement=requirement)
+
+    def list_candidates(self) -> list[RequirementCandidate]:
+        return self._repository.list_candidates(
+            organization_id=self._organization_id,
+            user_id=self._user_id,
+        )
 
     def record_human_added(
         self,

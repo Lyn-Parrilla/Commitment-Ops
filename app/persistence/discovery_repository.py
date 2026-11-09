@@ -64,6 +64,37 @@ class DiscoveryRepository:
         except SQLAlchemyError as exc:
             raise_persistence_failure("review persistence failed", exc)
 
+    def list_candidates(
+        self,
+        *,
+        organization_id: UUID,
+        user_id: UUID,
+    ) -> list[RequirementCandidate]:
+        try:
+            with tenant_session(
+                self._session_factory,
+                write=False,
+                user_id=user_id,
+                organization_id=organization_id,
+            ) as session:
+                identifiers = list(
+                    session.scalars(
+                        select(RequirementCandidateRecord.id).where(
+                            RequirementCandidateRecord.organization_id
+                            == organization_id
+                        )
+                    )
+                )
+                loaded = [
+                    _load_candidate(session, candidate_id, organization_id)
+                    for candidate_id in identifiers
+                ]
+        except PersistenceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise_persistence_failure("review lookup failed", exc)
+        return [candidate for candidate in loaded if candidate is not None]
+
     def get_candidate(
         self,
         candidate_id: UUID,

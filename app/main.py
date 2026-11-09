@@ -13,6 +13,7 @@ from app.api.errors import register_error_handlers
 from app.api.health import router as health_router
 from app.api.organizations import router as organizations_router
 from app.api.redaction import install_submission_log_redaction
+from app.api.source_documents import router as source_documents_router
 from app.api.submissions import router as submissions_router
 from app.api.workflows import router as workflows_router
 from app.config import get_settings
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     application.include_router(organizations_router)
     application.include_router(workflows_router)
     application.include_router(submissions_router)
+    application.include_router(source_documents_router)
     application.include_router(discovery_router)
     application.include_router(assistance_router)
     _install_web(application)

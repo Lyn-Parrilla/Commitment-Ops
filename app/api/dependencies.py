@@ -14,6 +14,11 @@ from app.api.auth import (
 from app.application import WorkflowService
 from app.application.assistance import AssistanceService
 from app.application.discovery import DiscoveryService
+from app.application.document_intake import DocumentIntakeService
+from app.application.document_interpretation import (
+    DocumentInterpreter,
+    configured_interpreter,
+)
 from app.application.submissions import SubmissionService
 from app.domain import Person
 from app.persistence import (
@@ -26,6 +31,8 @@ from app.persistence import (
     create_database_engine,
     create_session_factory,
 )
+from app.persistence.object_storage import ObjectStorage, configured_object_storage
+from app.persistence.source_documents import SourceDocumentRepository
 from app.persistence.submissions import SubmissionRepository
 
 
@@ -214,4 +221,73 @@ def get_submission_service(
         submission_repository,
         organization_id=organization_id,
         user_id=principal.user_id,
+    )
+
+
+def get_object_storage() -> ObjectStorage:
+    from app.config import get_settings
+
+    return configured_object_storage(get_settings())
+
+
+def get_document_interpreter() -> DocumentInterpreter:
+    from app.config import get_settings
+
+    return configured_interpreter(get_settings())
+
+
+def get_source_document_repository() -> SourceDocumentRepository:
+    return SourceDocumentRepository(_session_factory())
+
+
+def get_document_intake_service(
+    principal: Annotated[
+        AuthenticatedPrincipal,
+        Depends(get_authenticated_principal),
+    ],
+    organization_id: Annotated[UUID, Header(alias="X-Organization-ID")],
+    documents: Annotated[
+        SourceDocumentRepository,
+        Depends(get_source_document_repository),
+    ],
+    discovery_repository: Annotated[
+        DiscoveryRepository,
+        Depends(get_discovery_repository),
+    ],
+    workflow_repository: Annotated[
+        WorkflowRepository,
+        Depends(get_workflow_repository),
+    ],
+    organization_repository: Annotated[
+        OrganizationRepository,
+        Depends(get_organization_repository),
+    ],
+    storage: Annotated[ObjectStorage, Depends(get_object_storage)],
+    interpreter: Annotated[DocumentInterpreter, Depends(get_document_interpreter)],
+) -> DocumentIntakeService:
+    if not organization_repository.has_active_membership(
+        organization_id=organization_id,
+        user_id=principal.user_id,
+    ):
+        raise OrganizationAccessDeniedError
+    reviewer = Person.create(
+        name=principal.email,
+        email=principal.email,
+    ).model_copy(update={"id": principal.user_id})
+    discovery = DiscoveryService(
+        discovery_repository,
+        organization_id=organization_id,
+        user_id=principal.user_id,
+        reviewer=reviewer,
+    )
+    return DocumentIntakeService(
+        documents,
+        discovery,
+        workflow_repository,
+        storage,
+        interpreter,
+        organization_id=organization_id,
+        user_id=principal.user_id,
+        reviewer=reviewer,
+        actor_reference=principal.actor_reference,
     )

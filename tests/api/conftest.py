@@ -13,7 +13,10 @@ from app.api.auth import JWTVerifier, get_jwt_verifier
 from app.api.dependencies import (
     get_assistance_repository,
     get_discovery_repository,
+    get_document_interpreter,
+    get_object_storage,
     get_organization_repository,
+    get_source_document_repository,
     get_submission_repository,
     get_workflow_repository,
 )
@@ -31,7 +34,10 @@ from app.persistence import (
     create_database_engine,
     create_session_factory,
 )
+from app.application.document_interpretation import InterpretedCandidate
+from app.domain.document_text import ExtractedPage
 from app.persistence.object_storage import FakeObjectStorage
+from app.persistence.source_documents import SourceDocumentRepository
 from app.persistence.submissions import SubmissionRepository
 
 TEST_ISSUER = "https://auth.example.test/auth/v1"
@@ -42,6 +48,23 @@ TEST_ORGANIZATION_ID = UUID("30000000-0000-0000-0000-000000000001")
 TEST_OTHER_ORGANIZATION_ID = UUID(
     "30000000-0000-0000-0000-000000000002"
 )
+
+
+class ScriptedInterpreter:
+    """Deterministic stand-in. Tests never call a live model."""
+
+    def __init__(self) -> None:
+        self.results: list[InterpretedCandidate] = []
+        self.pages: list[ExtractedPage] = []
+        self.calls = 0
+        self.error: Exception | None = None
+
+    def interpret(self, pages) -> list[InterpretedCandidate]:
+        self.calls += 1
+        self.pages = list(pages)
+        if self.error is not None:
+            raise self.error
+        return list(self.results)
 
 
 class _SigningKey:
@@ -176,9 +199,16 @@ def api_client(
         lambda: AssistanceRepository(api_session_factory)
     )
     evidence_storage = FakeObjectStorage()
+    source_storage = FakeObjectStorage()
+    interpreter = ScriptedInterpreter()
     application.dependency_overrides[get_submission_repository] = (
         lambda: SubmissionRepository(api_session_factory, evidence_storage)
     )
+    application.dependency_overrides[get_source_document_repository] = (
+        lambda: SourceDocumentRepository(api_session_factory)
+    )
+    application.dependency_overrides[get_object_storage] = lambda: source_storage
+    application.dependency_overrides[get_document_interpreter] = lambda: interpreter
     application.dependency_overrides[get_jwt_verifier] = lambda: verifier
 
     with TestClient(application) as client:
@@ -189,6 +219,8 @@ def api_client(
             }
         )
         client.evidence_storage = evidence_storage
+        client.source_storage = source_storage
+        client.interpreter = interpreter
         yield client
 
     application.dependency_overrides.clear()

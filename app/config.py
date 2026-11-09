@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     llm_api_key: SecretStr | None = None
     llm_api_base_url: str | None = None
+    llm_model: str = "gpt-4o-mini"
 
     evidence_storage_endpoint: str | None = None
     evidence_storage_region: str | None = None

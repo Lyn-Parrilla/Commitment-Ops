@@ -103,13 +103,13 @@ def review_candidate(
     payload: CandidateReviewBody,
     service: Service,
 ) -> CandidateResponse:
-    candidate = service.review_candidate(
+    reviewed = service.review_candidate(
         candidate_id,
         payload.action,
         note=payload.note,
         reason=payload.reason,
     )
-    return CandidateResponse.from_domain(candidate)
+    return CandidateResponse.from_domain(reviewed.candidate)
 
 
 @router.post(

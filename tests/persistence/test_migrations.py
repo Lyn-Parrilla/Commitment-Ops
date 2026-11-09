@@ -288,7 +288,7 @@ def test_downgrade_refuses_non_legacy_tenant_assignments(
     engine.dispose()
     get_settings.cache_clear()
 
-    assert version == "20261028_10"
+    assert version == "20261106_13"
     assert stored_organization_id == organization_id
 
 
@@ -334,7 +334,7 @@ def test_downgrade_refuses_nonlegacy_organization_without_children(
     engine.dispose()
     get_settings.cache_clear()
 
-    assert version == "20261028_10"
+    assert version == "20261106_13"
     assert stored_name == "Synthetic Empty Tenant"
     assert "organizations" in tables
     assert "organization_memberships" in tables
@@ -365,7 +365,7 @@ def test_sqlite_downgrade_stamp_follows_only_completed_revisions(
     engine.dispose()
 
     command.downgrade(_bind_sqlite_url(config, database_url), "-1")
-    _assert_version(database_url, "20261027_09")
+    _assert_version(database_url, "20261104_12")
     command.upgrade(_bind_sqlite_url(config, database_url), "head")
 
     command.downgrade(_bind_sqlite_url(config, database_url), "20261027_09")
@@ -373,8 +373,8 @@ def test_sqlite_downgrade_stamp_follows_only_completed_revisions(
     command.upgrade(_bind_sqlite_url(config, database_url), "head")
 
     with pytest.raises(Exception, match="Refusing to downgrade"):
-        command.downgrade(_bind_sqlite_url(config, database_url), "-2")
-    _assert_version(database_url, "20261028_10")
+        command.downgrade(_bind_sqlite_url(config, database_url), "-5")
+    _assert_version(database_url, "20261106_13")
     command.check(_bind_sqlite_url(config, database_url))
 
     engine = create_database_engine(database_url)

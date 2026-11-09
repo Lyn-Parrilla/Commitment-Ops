@@ -113,7 +113,7 @@ def test_application_role_is_subject_to_forced_rls(postgres_engine) -> None:
                     'organizations', 'organization_memberships', 'people',
                     'workflows', 'requirements', 'evidence', 'audit_events',
                     'assistance_proposals', 'assistance_proposal_events',
-                    'submission_links'
+                    'submission_links', 'source_documents'
                   )
                   AND pg_class.relrowsecurity
                   AND pg_class.relforcerowsecurity
@@ -131,7 +131,7 @@ def test_application_role_is_subject_to_forced_rls(postgres_engine) -> None:
     assert can_create_role is False
     assert can_create_db is False
     assert can_login is False
-    assert forced == 10
+    assert forced == 11
 
 
 def test_cross_tenant_statements_fail_closed(postgres_engine) -> None:

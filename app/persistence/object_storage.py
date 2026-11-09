@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 from app.domain.evidence_files import (
     EVIDENCE_MEDIA_TYPES,
     MAX_EVIDENCE_FILE_BYTES,
-    require_storage_key,
+    require_private_object_key,
 )
 from app.persistence.exceptions import PersistenceError
 
@@ -66,19 +66,19 @@ class UnavailableObjectStorage:
     """Fail closed when no private bucket is configured."""
 
     def put_new(self, key: str, body: bytes, media_type: str) -> None:
-        require_storage_key(key)
+        require_private_object_key(key)
         raise PersistenceError("evidence file storage is not configured")
 
     def get(self, key: str) -> bytes:
-        require_storage_key(key)
+        require_private_object_key(key)
         raise PersistenceError("evidence file storage is not configured")
 
     def delete(self, key: str) -> None:
-        require_storage_key(key)
+        require_private_object_key(key)
         raise PersistenceError("evidence file storage is not configured")
 
     def exists(self, key: str) -> bool:
-        require_storage_key(key)
+        require_private_object_key(key)
         raise PersistenceError("evidence file storage is not configured")
 
 
@@ -139,7 +139,7 @@ class S3CompatibleObjectStorage:
         return "S3CompatibleObjectStorage(bucket=configured)"
 
     def put_new(self, key: str, body: bytes, media_type: str) -> None:
-        require_storage_key(key)
+        require_private_object_key(key)
         if media_type not in EVIDENCE_MEDIA_TYPES or not body:
             raise PersistenceError("evidence object was rejected")
         if len(body) > MAX_EVIDENCE_FILE_BYTES:
@@ -166,7 +166,7 @@ class S3CompatibleObjectStorage:
     def get(self, key: str) -> bytes:
         """Read object bytes inside this process. No URL is created."""
 
-        require_storage_key(key)
+        require_private_object_key(key)
         try:
             response = self._client().get_object(Bucket=self._bucket, Key=key)
         except PersistenceError:
@@ -185,7 +185,7 @@ class S3CompatibleObjectStorage:
         return data
 
     def delete(self, key: str) -> None:
-        require_storage_key(key)
+        require_private_object_key(key)
         try:
             self._client().delete_object(Bucket=self._bucket, Key=key)
         except PersistenceError:
@@ -196,7 +196,7 @@ class S3CompatibleObjectStorage:
             raise PersistenceError("evidence object could not be deleted") from None
 
     def exists(self, key: str) -> bool:
-        require_storage_key(key)
+        require_private_object_key(key)
         try:
             self._client().head_object(Bucket=self._bucket, Key=key)
         except PersistenceError:
@@ -365,7 +365,7 @@ class FakeObjectStorage:
         self.fail_deletes: set[str] = set()
 
     def put_new(self, key: str, body: bytes, media_type: str) -> None:
-        require_storage_key(key)
+        require_private_object_key(key)
         if key in self._objects:
             raise ObjectAlreadyExistsError("evidence object already exists")
         self._objects[key] = StoredObject(
@@ -375,23 +375,23 @@ class FakeObjectStorage:
         )
 
     def get(self, key: str) -> bytes:
-        require_storage_key(key)
+        require_private_object_key(key)
         stored = self._objects.get(key)
         if stored is None:
             raise PersistenceError("evidence object was not found")
         return stored.body
 
     def delete(self, key: str) -> None:
-        require_storage_key(key)
+        require_private_object_key(key)
         if key in self.fail_deletes:
             raise PersistenceError("evidence object could not be deleted")
         self._objects.pop(key, None)
 
     def exists(self, key: str) -> bool:
-        require_storage_key(key)
+        require_private_object_key(key)
         return key in self._objects
 
     def stored_at(self, key: str) -> datetime | None:
-        require_storage_key(key)
+        require_private_object_key(key)
         stored = self._objects.get(key)
         return None if stored is None else stored.stored_at

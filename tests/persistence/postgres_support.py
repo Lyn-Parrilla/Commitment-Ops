@@ -57,7 +57,7 @@ _ROLE_ATTRIBUTE = frozenset(
     }
 )
 LEGACY_ORGANIZATION_ID = UUID("00000000-0000-0000-0000-000000000001")
-EXPECTED_ALEMBIC_HEAD = "20261028_10"
+EXPECTED_ALEMBIC_HEAD = "20261106_13"
 SKIP_REASON = (
     "PostgreSQL integration tests were skipped because TEST_DATABASE_URL is "
     "not set. Export that variable, or set only that key in the untracked "
