@@ -1,13 +1,21 @@
 """Text extraction keeps page locations and does not invent missing text."""
 
 import io
+import warnings
+import zlib
 import zipfile
 from uuid import uuid4
 
 import pytest
 
-from app.domain.document_text import extract_document_text, prompt_window
+from app.domain.document_text import (
+    _MAX_PDF_OBJECTS,
+    _MAX_STREAM_OUTPUT,
+    extract_document_text,
+    prompt_window,
+)
 from app.domain.evidence_files import (
+    MAX_EVIDENCE_FILE_BYTES,
     build_source_document_key,
     inspect_source_document,
     require_storage_key,
@@ -25,6 +33,17 @@ def _pdf(text: str) -> bytes:
         + f"4 0 obj << /Length {len(stream)} >> stream\n".encode()
         + stream
         + b"\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF"
+    )
+
+
+def _pdf_stream(stream: bytes) -> bytes:
+    return (
+        b"%PDF-1.4\n"
+        b"1 0 obj << /Length "
+        + str(len(stream)).encode()
+        + b" >> stream\n"
+        + stream
+        + b"\nendstream endobj\n%%EOF"
     )
 
 
@@ -103,6 +122,176 @@ def test_source_documents_accept_pdf_and_reject_other_evidence_types() -> None:
 
     with pytest.raises(DomainValidationError, match="not an allowed type"):
         inspect_source_document("notes.csv", b"column\nvalue\n")
+
+
+def test_complete_zlib_stream_is_read() -> None:
+    sentence = "The grantee shall submit a quarterly report."
+    stream = zlib.compress(f"BT ({sentence}) Tj ET".encode("latin-1"))
+
+    extracted = extract_document_text("application/pdf", _pdf_stream(stream))
+
+    assert extracted.pages[0].text == sentence
+
+
+def test_truncated_zlib_stream_is_rejected() -> None:
+    stream = zlib.compress(b"BT (kept) Tj ET")[:8]
+
+    with pytest.raises(DomainValidationError, match="does not match its extension") as caught:
+        extract_document_text("application/pdf", _pdf_stream(stream))
+
+    assert "kept" not in str(caught.value)
+
+
+def test_malformed_zlib_stream_is_not_read_as_text() -> None:
+    header = zlib.compress(b"x")[:2]
+    stream = header + b"not-deflate (secret obligation)"
+
+    with pytest.raises(DomainValidationError, match="does not match its extension") as caught:
+        extract_document_text("application/pdf", _pdf_stream(stream))
+
+    assert "secret obligation" not in str(caught.value)
+
+
+def test_zlib_checksum_failure_is_rejected() -> None:
+    stream = bytearray(zlib.compress(b"BT (secret obligation) Tj ET"))
+    stream[-1] ^= 0xFF
+
+    with pytest.raises(DomainValidationError, match="does not match its extension") as caught:
+        extract_document_text("application/pdf", _pdf_stream(bytes(stream)))
+
+    assert "secret obligation" not in str(caught.value)
+
+
+def test_preset_dictionary_header_is_rejected() -> None:
+    stream = bytes((0x78, 0x20)) + b"(secret obligation)"
+
+    with pytest.raises(DomainValidationError, match="does not match its extension") as caught:
+        extract_document_text("application/pdf", _pdf_stream(stream))
+
+    assert "secret obligation" not in str(caught.value)
+
+
+def test_zlib_trailing_data_is_rejected() -> None:
+    stream = zlib.compress(b"BT (visible) Tj ET") + b"(trailing secret)"
+
+    with pytest.raises(DomainValidationError, match="does not match its extension") as caught:
+        extract_document_text("application/pdf", _pdf_stream(stream))
+
+    assert "trailing secret" not in str(caught.value)
+    assert "visible" not in str(caught.value)
+
+
+def test_concatenated_zlib_streams_are_rejected() -> None:
+    stream = zlib.compress(b"BT (one) Tj ET") + zlib.compress(b"BT (two) Tj ET")
+
+    with pytest.raises(DomainValidationError, match="does not match its extension") as caught:
+        extract_document_text("application/pdf", _pdf_stream(stream))
+
+    assert "one" not in str(caught.value)
+    assert "two" not in str(caught.value)
+
+
+def test_decompression_stops_at_the_output_cap() -> None:
+    stream = zlib.compress(b"A" * (_MAX_STREAM_OUTPUT + 1))
+
+    with pytest.raises(DomainValidationError, match="too large to read") as caught:
+        extract_document_text("application/pdf", _pdf_stream(stream))
+
+    assert "A" * 32 not in str(caught.value)
+
+
+def test_compressed_pdf_bomb_is_rejected() -> None:
+    payload = b"(" + (b"A" * 300_000) + b")"
+    compressed = zlib.compress(payload)
+    content = (
+        b"%PDF-1.4\n"
+        b"1 0 obj << /Length "
+        + str(len(compressed)).encode()
+        + b" >> stream\n"
+        + compressed
+        + b"\nendstream endobj\n%%EOF"
+    )
+
+    with pytest.raises(DomainValidationError, match="too large to read"):
+        extract_document_text("application/pdf", content)
+
+
+def test_compressed_docx_bomb_is_rejected() -> None:
+    document = b"A" * 200_000
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", b"<Types/>")
+        archive.writestr("word/document.xml", document)
+
+    with pytest.raises(DomainValidationError, match="too large to read"):
+        extract_document_text(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            buffer.getvalue(),
+        )
+
+
+def test_malformed_documents_are_rejected() -> None:
+    with pytest.raises(DomainValidationError, match="does not match its extension"):
+        extract_document_text("application/pdf", b"not a pdf")
+    with pytest.raises(DomainValidationError, match="does not match its extension"):
+        extract_document_text(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            b"PK\x03\x04broken",
+        )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", b"<not-xml")
+    with pytest.raises(DomainValidationError, match="does not match its extension"):
+        extract_document_text(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            buffer.getvalue(),
+        )
+
+
+def test_duplicate_docx_document_entries_are_rejected() -> None:
+    buffer = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("[Content_Types].xml", b"<Types/>")
+            archive.writestr("word/document.xml", b"<w:document/>")
+            archive.writestr("word/document.xml", b"<w:document><w:t>hidden</w:t></w:document>")
+
+    with pytest.raises(DomainValidationError, match="does not match its extension") as caught:
+        extract_document_text(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            buffer.getvalue(),
+        )
+
+    assert "hidden" not in str(caught.value)
+
+
+def test_excessive_pdf_objects_are_rejected() -> None:
+    objects = b"".join(
+        f"{number} 0 obj << >> endobj\n".encode()
+        for number in range(1, _MAX_PDF_OBJECTS + 2)
+    )
+
+    with pytest.raises(DomainValidationError, match="too large to read"):
+        extract_document_text("application/pdf", b"%PDF-1.4\n" + objects)
+
+
+def test_pdf_object_limit_allows_the_maximum() -> None:
+    objects = b"".join(
+        f"{number} 0 obj << >> endobj\n".encode()
+        for number in range(1, _MAX_PDF_OBJECTS + 1)
+    )
+
+    extracted = extract_document_text("application/pdf", b"%PDF-1.4\n" + objects)
+
+    assert extracted.pages == ()
+
+
+def test_oversized_input_is_rejected_before_parsing() -> None:
+    content = b"%PDF-" + (b"x" * MAX_EVIDENCE_FILE_BYTES)
+
+    with pytest.raises(DomainValidationError, match="too large to read"):
+        extract_document_text("application/pdf", content)
 
 
 def test_source_document_keys_are_not_evidence_keys() -> None:

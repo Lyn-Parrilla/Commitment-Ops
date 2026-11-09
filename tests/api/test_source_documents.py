@@ -98,6 +98,29 @@ def _attacker_headers(token_factory) -> dict[str, str]:
     }
 
 
+def test_unauthenticated_upload_is_rejected(
+    api_client: TestClient,
+) -> None:
+    workflow_id = _workflow(api_client)
+    sentence = "Private grant obligation."
+    headers = dict(api_client.headers)
+    api_client.headers.pop("Authorization", None)
+    try:
+        rejected = api_client.post(
+            f"/api/v1/workflows/{workflow_id}/source-documents",
+            files={"file": ("award.pdf", _pdf(sentence), "application/pdf")},
+            data={"document_type": "grant_agreement"},
+        )
+    finally:
+        api_client.headers.update(headers)
+
+    assert rejected.status_code == 401
+    assert rejected.json()["error"]["code"] == "authentication_required"
+    assert "storage_key" not in rejected.text
+    assert "checksum" not in rejected.text
+    assert sentence not in rejected.text
+
+
 def test_upload_process_review_and_human_addition(
     api_client: TestClient,
     api_session_factory: SessionFactory,

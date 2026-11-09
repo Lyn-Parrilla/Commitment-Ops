@@ -13,11 +13,22 @@ import zipfile
 from dataclasses import dataclass
 from xml.etree import ElementTree
 
+from app.domain.evidence_files import (
+    MAX_EVIDENCE_FILE_BYTES,
+    MAX_ZIP_COMPRESSION_RATIO,
+    MAX_ZIP_ENTRIES,
+    MAX_ZIP_ENTRY_BYTES,
+)
 from app.domain.exceptions import DomainValidationError
 
 _PAGE_CHAR_LIMIT = 8_000
 _PAGE_LIMIT = 50
 _PROMPT_CHAR_LIMIT = 12_000
+_MAX_PDF_OBJECTS = 2_000
+_MAX_STREAM_OUTPUT = 1_048_576
+_RATIO_FLOOR = 64 * 1024
+_MAX_DOCX_XML = 2_097_152
+_READ_CHUNK = 64 * 1024
 _WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _STRING = re.compile(rb"\((?:\\.|[^\\)])*\)")
 _OBJECT = re.compile(rb"(\d+)\s+\d+\s+obj\b(.*?)\bendobj\b", re.DOTALL)
@@ -67,6 +78,8 @@ def prompt_window(
 
 
 def extract_document_text(media_type: str, content: bytes) -> ExtractedDocument:
+    if len(content) > MAX_EVIDENCE_FILE_BYTES:
+        raise DomainValidationError("This file is too large to read.")
     if media_type == "application/pdf":
         return _limit(_extract_pdf(content))
     if media_type == (
@@ -90,10 +103,15 @@ def _limit(document: ExtractedDocument) -> ExtractedDocument:
 
 
 def _extract_pdf(content: bytes) -> ExtractedDocument:
-    objects = {
-        int(match.group(1)): match.group(2)
-        for match in _OBJECT.finditer(content)
-    }
+    if not content.startswith(b"%PDF-"):
+        raise DomainValidationError("The file does not match its extension.")
+    objects: dict[int, bytes] = {}
+    seen = 0
+    for match in _OBJECT.finditer(content):
+        seen += 1
+        if seen > _MAX_PDF_OBJECTS:
+            raise DomainValidationError("This file is too large to read.")
+        objects[int(match.group(1))] = match.group(2)
     streams = {number: _stream_text(body) for number, body in objects.items()}
     pages: list[ExtractedPage] = []
     for body in objects.values():
@@ -123,11 +141,90 @@ def _stream_text(body: bytes) -> str:
     elif body[start:start + 1] in (b"\n", b"\r"):
         start += 1
     raw = body[start:end].rstrip(b"\r\n")
+    return _strings(_bounded_inflate(raw))
+
+
+def _zlib_header_kind(raw: bytes) -> str:
+    """Classify the front of a stream as literal, one zlib member, or malformed.
+
+    A zlib header is recognized only when its checksum matches. Deflate members
+    are inflated. A checksum-valid header that is not a plain deflate member,
+    including a preset dictionary, is malformed. Anything else is literal PDF
+    content and must not be passed to zlib.
+    """
+
+    if len(raw) < 2:
+        return "literal"
+    cmf = raw[0]
+    flg = raw[1]
+    if (cmf * 256 + flg) % 31 != 0:
+        return "literal"
+    if (cmf & 0x0F) != 8 or (cmf >> 4) > 7 or flg & 0x20:
+        return "malformed"
+    return "member"
+
+
+def _bounded_inflate(raw: bytes) -> bytes:
+    """Return literal PDF bytes, or the output of one complete zlib member.
+
+    Literal bytes are returned unchanged. A recognized member is inflated in
+    bounded steps. Each step may emit at most the unused portion of the
+    cumulative output cap, so ``unconsumed_tail`` is never inflated without
+    that remaining room and is never appended to another buffer.
+
+    A finished member with any unused or unread bytes is rejected. That covers
+    both plain trailing data and a concatenated zlib member. A member that
+    ends before its checksum, and any zlib error after a recognized header,
+    is rejected rather than read as literal text. The output of a single
+    accepted member must also stay within the compression-ratio cap.
+    """
+
+    if len(raw) > MAX_EVIDENCE_FILE_BYTES:
+        raise DomainValidationError("This file is too large to read.")
+    kind = _zlib_header_kind(raw)
+    if kind == "literal":
+        return raw
+    if kind != "member":
+        raise DomainValidationError("The file does not match its extension.")
+
+    decompressor = zlib.decompressobj()
+    produced = bytearray()
+    offset = 0
     try:
-        decoded = zlib.decompress(raw)
+        while not decompressor.eof:
+            remaining = _MAX_STREAM_OUTPUT - len(produced)
+            if remaining <= 0:
+                raise DomainValidationError("This file is too large to read.")
+            pending = decompressor.unconsumed_tail
+            if pending:
+                piece = decompressor.decompress(pending, remaining)
+            elif offset < len(raw):
+                end = min(offset + _READ_CHUNK, len(raw))
+                piece = decompressor.decompress(raw[offset:end], remaining)
+                offset = end
+            else:
+                break
+            if piece:
+                produced.extend(piece)
+            elif pending or offset >= len(raw):
+                break
+            if not decompressor.eof and len(produced) >= _MAX_STREAM_OUTPUT:
+                raise DomainValidationError("This file is too large to read.")
     except zlib.error:
-        decoded = raw
-    return _strings(decoded)
+        raise DomainValidationError("The file does not match its extension.") from None
+
+    if not decompressor.eof or decompressor.unconsumed_tail:
+        if len(produced) >= _MAX_STREAM_OUTPUT or decompressor.unconsumed_tail:
+            raise DomainValidationError("This file is too large to read.")
+        raise DomainValidationError("The file does not match its extension.")
+    if decompressor.unused_data or offset < len(raw):
+        raise DomainValidationError("The file does not match its extension.")
+    if (
+        len(produced) > _RATIO_FLOOR
+        and len(produced) > MAX_ZIP_COMPRESSION_RATIO * max(len(raw), 1)
+    ):
+        raise DomainValidationError("This file is too large to read.")
+    return bytes(produced)
 
 
 def _strings(payload: bytes) -> str:
@@ -155,9 +252,16 @@ def _unescape(value: bytes) -> str:
 
 def _extract_docx(content: bytes) -> ExtractedDocument:
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            document = archive.read("word/document.xml")
-    except (KeyError, zipfile.BadZipFile, OSError) as exc:
+        document = _read_docx_xml(content)
+    except DomainValidationError:
+        raise
+    except (
+        KeyError,
+        zipfile.BadZipFile,
+        zlib.error,
+        EOFError,
+        OSError,
+    ) as exc:
         raise DomainValidationError("The file does not match its extension.") from exc
     try:
         root = ElementTree.fromstring(document)
@@ -181,3 +285,49 @@ def _extract_docx(content: bytes) -> ExtractedDocument:
         if lines
     )
     return ExtractedDocument(pages=extracted, truncated=False)
+
+
+def _read_docx_xml(content: bytes) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        infos = archive.infolist()
+        if len(infos) > MAX_ZIP_ENTRIES:
+            raise DomainValidationError("This file is too large to read.")
+        total = 0
+        document_info = None
+        for info in infos:
+            declared = info.file_size
+            compressed = info.compress_size
+            if declared < 0 or compressed < 0 or declared > MAX_ZIP_ENTRY_BYTES:
+                raise DomainValidationError("This file is too large to read.")
+            if (
+                declared > _RATIO_FLOOR
+                and declared > MAX_ZIP_COMPRESSION_RATIO * max(compressed, 1)
+            ):
+                raise DomainValidationError("This file is too large to read.")
+            total += declared
+            if total > MAX_ZIP_ENTRY_BYTES:
+                raise DomainValidationError("This file is too large to read.")
+            if info.filename == "word/document.xml":
+                if document_info is not None:
+                    raise DomainValidationError(
+                        "The file does not match its extension."
+                    )
+                document_info = info
+        if document_info is None:
+            raise DomainValidationError("The file does not match its extension.")
+        return _read_zip_entry(archive, document_info)
+
+
+def _read_zip_entry(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    with archive.open(info, "r") as handle:
+        while True:
+            block = handle.read(_READ_CHUNK)
+            if not block:
+                break
+            total += len(block)
+            if total > _MAX_DOCX_XML:
+                raise DomainValidationError("This file is too large to read.")
+            chunks.append(block)
+    return b"".join(chunks)
