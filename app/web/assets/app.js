@@ -304,6 +304,411 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function apiForm(path, form, options = {}) {
+  const session = await ensureSession();
+  if (!session) {
+    const expired = new Error("expired");
+    expired.status = 401;
+    throw expired;
+  }
+  const headers = {
+    Authorization: `Bearer ${session.accessToken}`,
+    Accept: "application/json",
+  };
+  if (options.organization) headers["X-Organization-ID"] = options.organization;
+  const response = await fetch(path, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(messageFrom(payload, response.status));
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+const SOURCE_STATUS_LABELS = {
+  uploaded: "Uploaded",
+  processing: "Reading",
+  processed: "Ready for review",
+  failed: "Could not read",
+};
+const SOURCE_PROVENANCE_LABELS = {
+  document_explicit: "Explicit obligation",
+  ai_inferred: "Inferred obligation",
+  user_provided: "Added by a reviewer",
+};
+const SOURCE_FAILURES = {
+  no_extractable_text: "This document has no readable text.",
+  interpretation_unavailable: "Document interpretation is not configured.",
+  interpretation_invalid: "The interpretation could not be validated.",
+  interpretation_failed: "Document interpretation failed. Try again.",
+};
+
+function sourceFailure(code) {
+  return SOURCE_FAILURES[code] || "This document could not be processed.";
+}
+
+async function loadSourceDocuments(workflow, panel) {
+  panel.replaceChildren(el("p", { class: "muted", text: "Loading documents…" }));
+  try {
+    const documents = await api(
+      `/api/v1/workflows/${workflow.id}/source-documents`,
+      { organization: activeOrganization.id },
+    );
+    renderSourceDocuments(workflow, panel, documents);
+  } catch (error) {
+    if (error.status === 401) return showExpired();
+    panel.replaceChildren(banner(error.message));
+  }
+}
+
+function renderSourceDocuments(workflow, panel, documents) {
+  const upload = sourceUploadForm(workflow, panel);
+  const cards = documents.map((document) => sourceDocumentCard(workflow, panel, document));
+  panel.replaceChildren(upload, ...cards);
+}
+
+function sourceUploadForm(workflow, panel) {
+  const file = el("input", {
+    type: "file",
+    accept: ".pdf,.docx,application/pdf",
+    required: "required",
+  });
+  const documentType = el("select", {}, [
+    el("option", { value: "grant_agreement", text: "Grant agreement" }),
+    el("option", { value: "contract", text: "Contract" }),
+    el("option", { value: "policy", text: "Policy" }),
+    el("option", { value: "regulatory_filing", text: "Regulatory filing" }),
+    el("option", { value: "implementation_plan", text: "Implementation plan" }),
+    el("option", { value: "other", text: "Other" }),
+  ]);
+  const submit = el("button", { class: "button", type: "submit", text: "Upload document" });
+  const form = el("form", { class: "card" }, [
+    el("h3", { text: "Grant or contract" }),
+    el("p", {
+      class: "muted",
+      text: "Upload a PDF or Word document. Proposed requirements stay unapproved until you review them.",
+    }),
+    el("div", { class: "form-grid" }, [
+      el("label", { class: "field" }, [el("span", { text: "Document" }), file]),
+      el("label", { class: "field" }, [el("span", { text: "Document type" }), documentType]),
+    ]),
+    el("div", { class: "toolbar" }, [submit]),
+  ]);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    form.querySelector(".banner")?.remove();
+    const selected = file.files && file.files[0];
+    if (!selected) {
+      form.insertBefore(banner("Choose a document."), form.querySelector("h3").nextSibling);
+      return;
+    }
+    const body = new FormData();
+    body.append("file", selected);
+    body.append("document_type", documentType.value);
+    submit.disabled = true;
+    submit.textContent = "Uploading…";
+    try {
+      await apiForm(
+        `/api/v1/workflows/${workflow.id}/source-documents`,
+        body,
+        { organization: activeOrganization.id },
+      );
+      await loadSourceDocuments(workflow, panel);
+    } catch (error) {
+      if (error.status === 401) return showExpired();
+      submit.disabled = false;
+      submit.textContent = "Upload document";
+      form.insertBefore(banner(error.message), form.querySelector("h3").nextSibling);
+    }
+  });
+  return form;
+}
+
+function sourceDocumentCard(workflow, panel, document) {
+  const status = el("p", {
+    text: readableLabel(document.processing_status, SOURCE_STATUS_LABELS),
+  });
+  const notice = document.failure_code
+    ? el("p", { class: "banner", text: sourceFailure(document.failure_code) })
+    : null;
+  const truncated = document.text_truncated
+    ? el("p", { class: "muted", text: "Some source text was truncated." })
+    : null;
+  const read = el("button", {
+    class: "button-secondary",
+    type: "button",
+    text: document.processing_status === "processed" ? "Read again" : "Read document",
+  });
+  const candidates = el("div", { class: "stack" });
+  read.addEventListener("click", async () => {
+    if (read.disabled) return;
+    read.disabled = true;
+    read.textContent = "Reading…";
+    try {
+      await api(
+        `/api/v1/workflows/${workflow.id}/source-documents/${document.id}/process`,
+        { method: "POST", organization: activeOrganization.id },
+      );
+      await loadSourceDocuments(workflow, panel);
+    } catch (error) {
+      if (error.status === 401) return showExpired();
+      read.disabled = false;
+      read.textContent = "Read document";
+      status.textContent = error.message;
+    }
+  });
+  const card = el("article", { class: "card" }, [
+    el("h3", { text: document.filename }),
+    status,
+    notice,
+    truncated,
+    el("div", { class: "toolbar" }, [read]),
+    candidates,
+    missingRequirementForm(workflow, document),
+  ]);
+  if (document.processing_status === "processed" || document.processing_status === "failed") {
+    loadDocumentCandidates(workflow, panel, document, candidates);
+  }
+  return card;
+}
+
+async function loadDocumentCandidates(workflow, panel, document, host) {
+  try {
+    const candidates = await api(
+      `/api/v1/workflows/${workflow.id}/source-documents/${document.id}/candidates`,
+      { organization: activeOrganization.id },
+    );
+    host.replaceChildren(
+      ...(candidates.length
+        ? candidates.map((candidate) => candidateCard(workflow, panel, document, candidate))
+        : [el("p", { class: "muted", text: "No proposed requirements were found." })]),
+    );
+  } catch (error) {
+    if (error.status === 401) return showExpired();
+    host.replaceChildren(banner(error.message));
+  }
+}
+
+function candidateCard(workflow, panel, document, candidate) {
+  const location = candidate.source_location;
+  const where = location
+    ? [
+      location.page ? `Page ${location.page}` : "",
+      location.section || "",
+      location.heading || "",
+    ].filter(Boolean).join(" · ")
+    : "Location unavailable";
+  const missing = Array.isArray(candidate.missing_fields) && candidate.missing_fields.length
+    ? el("p", {
+      class: "banner",
+      text: `Missing information: ${candidate.missing_fields.join(", ")}.`,
+    })
+    : null;
+  const excerpt = el("div", { class: "source-excerpt" });
+  const open = el("button", {
+    class: "button-secondary",
+    type: "button",
+    text: "Show source",
+  });
+  open.addEventListener("click", async () => {
+    open.disabled = true;
+    try {
+      const page = location && location.page ? `?page=${location.page}` : "";
+      const payload = await api(
+        `/api/v1/workflows/${workflow.id}/source-documents/${document.id}/excerpt${page}`,
+        { organization: activeOrganization.id },
+      );
+      excerpt.replaceChildren(el("p", { text: payload.text || "No source text is available." }));
+    } catch (error) {
+      if (error.status === 401) return showExpired();
+      excerpt.replaceChildren(banner(error.message));
+    } finally {
+      open.disabled = false;
+    }
+  });
+  const decision = el("p", {
+    class: "muted",
+    text: readableLabel(candidate.review_status, REVIEW_LABELS),
+  });
+  return el("article", { class: "card" }, [
+    el("h3", { text: candidate.title || "Untitled proposal" }),
+    el("p", { text: candidate.description || "No description was found." }),
+    el("div", { class: "meta" }, [
+      el("span", {
+        class: "chip",
+        text: readableLabel(candidate.provenance, SOURCE_PROVENANCE_LABELS),
+      }),
+      el("span", { class: "chip", text: where }),
+    ]),
+    candidate.discovery_reason
+      ? el("p", { text: candidate.discovery_reason })
+      : null,
+    candidate.confidence == null
+      ? null
+      : el("p", {
+        class: "muted",
+        text: `Advisory confidence ${candidate.confidence}. A person still decides.`,
+      }),
+    missing,
+    decision,
+    el("div", { class: "toolbar" }, [open]),
+    excerpt,
+    candidate.review_status === "pending_review"
+      ? candidateEditor(workflow, panel, document, candidate)
+      : null,
+  ]);
+}
+
+function candidateEditor(workflow, panel, document, candidate) {
+  const title = el("input", { type: "text", value: candidate.title || "", maxlength: "500" });
+  const description = el("textarea", { text: candidate.description || "" });
+  const evidence = el("textarea", { text: candidate.evidence_expectation || "" });
+  const ownerName = el("input", { type: "text", maxlength: "200" });
+  const ownerEmail = el("input", { type: "email", maxlength: "320" });
+  const reason = el("input", { type: "text", maxlength: "500" });
+  const save = el("button", { class: "button-secondary", type: "button", text: "Save changes" });
+  const approve = el("button", { class: "button", type: "button", text: "Approve" });
+  const reject = el("button", { class: "button-secondary", type: "button", text: "Reject" });
+  const form = el("div", { class: "form-grid" }, [
+    el("label", { class: "field wide" }, [el("span", { text: "Title" }), title]),
+    el("label", { class: "field wide" }, [el("span", { text: "Description" }), description]),
+    el("label", { class: "field wide" }, [el("span", { text: "Evidence expectation" }), evidence]),
+    el("label", { class: "field" }, [el("span", { text: "Owner name" }), ownerName]),
+    el("label", { class: "field" }, [el("span", { text: "Owner email" }), ownerEmail]),
+    el("label", { class: "field wide" }, [el("span", { text: "Rejection reason" }), reason]),
+    el("div", { class: "toolbar wide" }, [save, approve, reject]),
+  ]);
+  const base = `/api/v1/workflows/${workflow.id}/source-documents/${document.id}/candidates/${candidate.id}`;
+  save.addEventListener("click", async () => {
+    await sendCandidateDecision(form, save, workflow, panel, `${base}/revisions`, {
+      title: title.value.trim(),
+      description: description.value.trim(),
+      evidence_expectation: evidence.value.trim(),
+      owner: ownerName.value.trim() && ownerEmail.value.trim()
+        ? { name: ownerName.value.trim(), email: ownerEmail.value.trim() }
+        : undefined,
+    });
+  });
+  approve.addEventListener("click", async () => {
+    if (approve.disabled) return;
+    approve.disabled = true;
+    form.querySelector(".banner")?.remove();
+    try {
+      if (ownerName.value.trim() && ownerEmail.value.trim()) {
+        await api(`${base}/revisions`, {
+          method: "POST",
+          organization: activeOrganization.id,
+          body: {
+            title: title.value.trim(),
+            description: description.value.trim(),
+            evidence_expectation: evidence.value.trim(),
+            owner: { name: ownerName.value.trim(), email: ownerEmail.value.trim() },
+          },
+        });
+      }
+      await api(`${base}/review`, {
+        method: "POST",
+        organization: activeOrganization.id,
+        body: { action: "approve" },
+      });
+      const fresh = await reloadWorkflow(workflow.id);
+      mount(detailView(fresh));
+    } catch (error) {
+      if (error.status === 401) return showExpired();
+      approve.disabled = false;
+      form.prepend(banner(error.message));
+    }
+  });
+  reject.addEventListener("click", async () => {
+    await sendCandidateDecision(form, reject, workflow, panel, `${base}/review`, {
+      action: "reject",
+      reason: reason.value.trim(),
+    });
+  });
+  return form;
+}
+
+async function sendCandidateDecision(form, button, workflow, panel, path, body, options = {}) {
+  if (button.disabled) return false;
+  form.querySelector(".banner")?.remove();
+  const payload = { ...body };
+  if (payload.owner === undefined) delete payload.owner;
+  button.disabled = true;
+  try {
+    await api(path, {
+      method: "POST",
+      organization: activeOrganization.id,
+      body: payload,
+    });
+    if (options.reloadWorkflow) {
+      const fresh = await reloadWorkflow(workflow.id);
+      mount(detailView(fresh));
+    } else if (options.reload !== false) {
+      await loadSourceDocuments(workflow, panel);
+    }
+    return true;
+  } catch (error) {
+    if (error.status === 401) return showExpired();
+    button.disabled = false;
+    form.prepend(banner(error.message));
+    return false;
+  }
+}
+
+function missingRequirementForm(workflow, document) {
+  const title = el("input", { type: "text", maxlength: "500", required: "required" });
+  const description = el("textarea", { required: "required" });
+  const ownerName = el("input", { type: "text", maxlength: "200", required: "required" });
+  const ownerEmail = el("input", { type: "email", maxlength: "320", required: "required" });
+  const evidence = el("textarea", { required: "required" });
+  const submit = el("button", { class: "button-secondary", type: "submit", text: "Add missed requirement" });
+  const form = el("form", { class: "requirement-form" }, [
+    el("h3", { text: "Requirement the reading missed" }),
+    el("div", { class: "form-grid" }, [
+      el("label", { class: "field wide" }, [el("span", { text: "Title" }), title]),
+      el("label", { class: "field wide" }, [el("span", { text: "Description" }), description]),
+      el("label", { class: "field" }, [el("span", { text: "Owner name" }), ownerName]),
+      el("label", { class: "field" }, [el("span", { text: "Owner email" }), ownerEmail]),
+      el("label", { class: "field wide" }, [el("span", { text: "Evidence expectation" }), evidence]),
+    ]),
+    el("div", { class: "toolbar" }, [submit]),
+  ]);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    form.querySelector(".banner")?.remove();
+    submit.disabled = true;
+    try {
+      await api(
+        `/api/v1/workflows/${workflow.id}/source-documents/${document.id}/requirements`,
+        {
+          method: "POST",
+          organization: activeOrganization.id,
+          body: {
+            title: title.value.trim(),
+            description: description.value.trim(),
+            owner: { name: ownerName.value.trim(), email: ownerEmail.value.trim() },
+            evidence_expectation: evidence.value.trim(),
+          },
+        },
+      );
+      const fresh = await reloadWorkflow(workflow.id);
+      mount(detailView(fresh));
+    } catch (error) {
+      if (error.status === 401) return showExpired();
+      submit.disabled = false;
+      form.prepend(banner(error.message));
+    }
+  });
+  return form;
+}
+
 function messageFrom(payload, status) {
   const details = payload?.error?.details;
   if (Array.isArray(details) && details.length) {
@@ -738,6 +1143,12 @@ async function reloadWorkflow(workflowId) {
   });
 }
 
+function sourceDocumentPanel(workflow) {
+  const panel = el("div", { class: "stack", id: "source-documents" });
+  loadSourceDocuments(workflow, panel);
+  return panel;
+}
+
 function detailView(workflow) {
   const requirements = workflow.requirements.length
     ? el("div", { class: "stack" }, workflow.requirements.map((requirement) => (
@@ -762,6 +1173,8 @@ function detailView(workflow) {
         }),
       ]),
     ]),
+    el("h3", { text: "Source documents" }),
+    sourceDocumentPanel(workflow),
     el("h3", { text: "Requirements" }),
     requirements,
     requirementForm(workflow),

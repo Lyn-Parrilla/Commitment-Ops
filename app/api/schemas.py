@@ -24,6 +24,7 @@ from app.domain.assistance import (
 from app.persistence.assistance_repository import StoredProposal
 from app.domain import (
     DiscoveryClassification,
+    DocumentProcessingStatus,
     DocumentType,
     EvidenceStatus,
     EvidenceType,
@@ -344,6 +345,7 @@ class CandidateResponse(APIModel):
     classification: DiscoveryClassification
     title: str | None
     description: str | None
+    evidence_expectation: str | None = None
     review_status: ReviewStatus
     reviewed_by: PersonResponse | None
     reviewed_at: datetime | None
@@ -352,6 +354,9 @@ class CandidateResponse(APIModel):
     source_filename: str
     source_reference: str
     source_location: SourceLocationResponse | None
+    discovery_reason: str | None = None
+    confidence: float | None = None
+    missing_fields: list[str] = Field(default_factory=list)
     learning_signals: list[LearningSignalResponse]
 
     @classmethod
@@ -365,6 +370,7 @@ class CandidateResponse(APIModel):
             classification=candidate.classification,
             title=candidate.title,
             description=candidate.description,
+            evidence_expectation=candidate.evidence_expectation,
             review_status=candidate.review_status,
             reviewed_by=(
                 None
@@ -386,6 +392,12 @@ class CandidateResponse(APIModel):
                 if location is None
                 else SourceLocationResponse.from_domain(location)
             ),
+            discovery_reason=candidate.discovery_reason,
+            confidence=candidate.confidence,
+            missing_fields=[
+                field.value
+                for field in candidate.assess_completeness().required_missing
+            ],
             learning_signals=[
                 LearningSignalResponse.from_domain(signal)
                 for signal in candidate.learning_signals
@@ -440,6 +452,42 @@ class AssistanceProposalResponse(APIModel):
                 for event in proposal.events
             ],
         )
+
+
+class SourceDocumentResponse(APIModel):
+    id: UUID
+    workflow_id: UUID
+    filename: str
+    media_type: str
+    byte_size: int
+    document_type: DocumentType
+    processing_status: DocumentProcessingStatus
+    failure_code: str | None
+    text_truncated: bool
+    uploaded_at: datetime
+
+
+class SourceDocumentUploadResponse(APIModel):
+    document: SourceDocumentResponse
+    duplicate: bool
+
+
+class SourceExcerptResponse(APIModel):
+    document_id: UUID
+    page: int
+    text: str
+
+
+class MissingRequirementRequest(APIModel):
+    title: str = Field(min_length=1, max_length=500)
+    description: str = Field(min_length=1)
+    owner: PersonInput
+    supervisor: PersonInput | None = None
+    evidence_expectation: str = Field(min_length=1)
+    due_date: date | None = None
+    target: str | None = Field(default=None, max_length=500)
+    source_location: SourceLocationInput | None = None
+    reason: str | None = None
 
 
 class ValidationIssue(APIModel):

@@ -60,6 +60,7 @@ async def read_bounded_multipart(
     request: Request,
     *,
     max_file_bytes: int = MAX_EVIDENCE_FILE_BYTES,
+    text_fields: frozenset[str] | None = None,
 ) -> BoundedMultipart:
     """Read one multipart body, stopping once a file part exceeds the cap."""
 
@@ -69,7 +70,7 @@ async def read_bounded_multipart(
     boundary = params.get(b"boundary")
     if content_type != b"multipart/form-data" or not boundary:
         raise DomainValidationError("The submission is not valid.")
-    reader = _Reader(max_file_bytes)
+    reader = _Reader(max_file_bytes, text_fields or _TEXT_FIELDS)
     parser = MultipartParser(
         boundary,
         _callbacks(reader),
@@ -99,8 +100,13 @@ async def read_bounded_multipart(
 
 
 class _Reader:
-    def __init__(self, max_file_bytes: int) -> None:
+    def __init__(
+        self,
+        max_file_bytes: int,
+        text_fields: frozenset[str] = _TEXT_FIELDS,
+    ) -> None:
         self.max_file_bytes = max_file_bytes
+        self._text_fields = text_fields
         self.fields: dict[str, str] = {}
         self.filename = ""
         self._file = bytearray()
@@ -178,7 +184,7 @@ class _Reader:
         if self._name == _FILE_FIELD:
             self._name = ""
             return
-        if self._name not in _TEXT_FIELDS or raw_filename is not None:
+        if self._name not in self._text_fields or raw_filename is not None:
             self.rejected = True
             raise DomainValidationError("The submission is not valid.")
         if self._name in self.fields:

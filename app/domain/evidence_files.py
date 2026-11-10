@@ -31,6 +31,18 @@ _STORAGE_KEY = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
     r"[0-9a-f]{32}$"
 )
+_SOURCE_DOCUMENT_KEY = re.compile(
+    r"^sources/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+SOURCE_DOCUMENT_MEDIA_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+)
 _OLE = bytes.fromhex("D0CF11E0A1B11AE1")
 _PNG = b"\x89PNG\r\n\x1a\n"
 _PDF = b"%PDF-"
@@ -75,6 +87,39 @@ def require_storage_key(key: str) -> str:
 def build_storage_key(organization_id: str, evidence_id: str, random_hex: str) -> str:
     key = f"{organization_id}/{evidence_id}/{random_hex}"
     return require_storage_key(key)
+
+
+def require_source_document_key(key: str) -> str:
+    if _SOURCE_DOCUMENT_KEY.fullmatch(key) is None:
+        raise DomainValidationError("source document storage key is not valid")
+    return key
+
+
+def build_source_document_key(
+    organization_id: str,
+    workflow_id: str,
+    document_id: str,
+) -> str:
+    return require_source_document_key(
+        f"sources/{organization_id}/{workflow_id}/{document_id}"
+    )
+
+
+def require_private_object_key(key: str) -> str:
+    """Accept an evidence key or a server-generated source-document key."""
+
+    if key.startswith("sources/"):
+        return require_source_document_key(key)
+    return require_storage_key(key)
+
+
+def inspect_source_document(filename: str, content: bytes) -> InspectedEvidenceFile:
+    """Accept only grant and contract formats this process can read."""
+
+    inspected = inspect_evidence_file(filename, content)
+    if inspected.media_type not in SOURCE_DOCUMENT_MEDIA_TYPES:
+        raise DomainValidationError("This file is not an allowed type.")
+    return inspected
 
 
 def inspect_evidence_file(filename: str, content: bytes) -> InspectedEvidenceFile:

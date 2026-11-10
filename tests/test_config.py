@@ -51,6 +51,7 @@ def test_settings_load_without_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.supabase_service_role_key is None
     assert settings.llm_api_key is None
     assert settings.llm_api_base_url is None
+    assert settings.llm_model == "gpt-4o-mini"
     assert settings.evidence_storage_endpoint is None
     assert settings.evidence_storage_region is None
     assert settings.evidence_storage_bucket is None

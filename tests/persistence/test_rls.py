@@ -113,7 +113,7 @@ def test_application_role_is_subject_to_forced_rls(postgres_engine) -> None:
                     'organizations', 'organization_memberships', 'people',
                     'workflows', 'requirements', 'evidence', 'audit_events',
                     'assistance_proposals', 'assistance_proposal_events',
-                    'submission_links'
+                    'submission_links', 'source_documents'
                   )
                   AND pg_class.relrowsecurity
                   AND pg_class.relforcerowsecurity
@@ -131,7 +131,7 @@ def test_application_role_is_subject_to_forced_rls(postgres_engine) -> None:
     assert can_create_role is False
     assert can_create_db is False
     assert can_login is False
-    assert forced == 10
+    assert forced == 11
 
 
 def test_cross_tenant_statements_fail_closed(postgres_engine) -> None:
@@ -235,6 +235,134 @@ def test_cross_tenant_statements_fail_closed(postgres_engine) -> None:
             {"workflow_id": seeded["workflow_b"]},
         )
     assert preserved == "Organization B"
+
+
+def test_source_document_is_invisible_to_another_organization(postgres_engine) -> None:
+    seeded = _seed(postgres_engine)
+    document_id = uuid4()
+    storage_key = (
+        f"sources/{seeded['org_a']}/{seeded['workflow_a']}/{document_id}"
+    )
+    with postgres_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_documents (
+                    id, organization_id, workflow_id, filename, media_type,
+                    byte_size, checksum_sha256, document_type, storage_key,
+                    processing_status, uploaded_by_user_id, uploaded_at
+                )
+                VALUES (
+                    :id, :organization_id, :workflow_id, 'grant.pdf',
+                    'application/pdf', 32, :checksum, 'grant_agreement',
+                    :storage_key, 'uploaded', :user_id, :uploaded_at
+                )
+                """
+            ),
+            {
+                "id": document_id,
+                "organization_id": seeded["org_a"],
+                "workflow_id": seeded["workflow_a"],
+                "checksum": "a" * 64,
+                "storage_key": storage_key,
+                "user_id": seeded["user_a"],
+                "uploaded_at": datetime.now(UTC),
+            },
+        )
+
+    with postgres_engine.connect() as connection:
+        visible = connection.begin()
+        _assume_member(connection, seeded["user_a"], seeded["org_a"])
+        assert connection.scalar(text("SELECT current_user")) == APP_ROLE
+        is_superuser, bypasses_rls = connection.execute(
+            text(
+                """
+                SELECT rolsuper, rolbypassrls
+                FROM pg_roles
+                WHERE rolname = :role
+                """
+            ),
+            {"role": APP_ROLE},
+        ).one()
+        assert is_superuser is False
+        assert bypasses_rls is False
+        assert connection.scalar(
+            text("SELECT current_setting('app.organization_id', true)")
+        ) == str(seeded["org_a"])
+        assert connection.scalar(
+            text("SELECT current_setting('app.user_id', true)")
+        ) == str(seeded["user_a"])
+        assert connection.scalar(
+            text("SELECT filename FROM source_documents WHERE id = :id"),
+            {"id": document_id},
+        ) == "grant.pdf"
+        renamed = connection.execute(
+            text(
+                "UPDATE source_documents SET filename = 'renamed.pdf' "
+                "WHERE id = :id"
+            ),
+            {"id": document_id},
+        )
+        assert renamed.rowcount == 1
+        visible.rollback()
+
+        hidden = connection.begin()
+        _assume_member(connection, seeded["user_b"], seeded["org_b"])
+        assert connection.scalar(text("SELECT current_user")) == APP_ROLE
+        assert connection.scalar(
+            text("SELECT current_setting('app.organization_id', true)")
+        ) == str(seeded["org_b"])
+        assert connection.scalar(text("SELECT COUNT(*) FROM source_documents")) == 0
+        assert connection.scalar(
+            text("SELECT filename FROM source_documents WHERE id = :id"),
+            {"id": document_id},
+        ) is None
+        update = connection.execute(
+            text(
+                "UPDATE source_documents SET filename = 'taken.pdf' "
+                "WHERE id = :id"
+            ),
+            {"id": document_id},
+        )
+        assert update.rowcount == 0
+        with pytest.raises(SQLAlchemyError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO source_documents (
+                            id, organization_id, workflow_id, filename, media_type,
+                            byte_size, checksum_sha256, document_type, storage_key,
+                            processing_status, uploaded_by_user_id, uploaded_at
+                        )
+                        VALUES (
+                            :id, :organization_id, :workflow_id, 'smuggled.pdf',
+                            'application/pdf', 32, :checksum, 'grant_agreement',
+                            :storage_key, 'uploaded', :user_id, :uploaded_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "organization_id": seeded["org_a"],
+                        "workflow_id": seeded["workflow_a"],
+                        "checksum": "b" * 64,
+                        "storage_key": (
+                            f"sources/{seeded['org_a']}/{seeded['workflow_a']}/"
+                            f"{uuid4()}"
+                        ),
+                        "user_id": seeded["user_b"],
+                        "uploaded_at": datetime.now(UTC),
+                    },
+                )
+        hidden.rollback()
+
+    with postgres_engine.connect() as connection:
+        preserved = connection.scalar(
+            text("SELECT filename FROM source_documents WHERE id = :id"),
+            {"id": document_id},
+        )
+    assert preserved == "grant.pdf"
 
 
 def test_context_does_not_survive_rollback_or_pool_reuse(postgres_engine) -> None:
